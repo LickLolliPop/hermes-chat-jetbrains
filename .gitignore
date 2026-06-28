@@ -79,4 +79,16 @@ logs/
 # =====================================================
 # Local backups (WSL-side .git stash after Windows git reinit)
 # =====================================================
-.git.wsl-bak/msg*.txt
+.git.wsl-bak/
+
+# =====================================================
+# IntelliJ Platform Gradle Plugin caches
+# (downloaded IDE distributions and per-build scratch space)
+# =====================================================
+.intellijPlatform/
+
+# =====================================================
+# Commit-message draft files (used by `git commit -F .msg-*.txt`
+# trick to avoid WSL->cmd quoting issues)
+# =====================================================
+.msg-*.txt
