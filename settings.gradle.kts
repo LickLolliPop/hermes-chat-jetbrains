@@ -24,7 +24,13 @@ plugins {
 
 @Suppress("UnstableApiUsage")
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    // The IntelliJ Platform Gradle Plugin injects ~10 of its own repositories
+    // (JetBrains Installers, Marketplace, IDE distributions, ...). Those have
+    // to be honoured, otherwise the plugin can't resolve IDE artifacts at all.
+    // PREFER_PROJECT lets project-level repositories coexist with the
+    // settings-level ones declared above — the opposite of PREFER_SETTINGS,
+    // which actively rejects repositories added by build files.
+    repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
     repositories {
         mavenCentral()
         // Runtime repositories (IDE distributions, bundled plugins, etc.).
