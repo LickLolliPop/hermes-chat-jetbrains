@@ -24,9 +24,18 @@ dependencies {
     intellijPlatform {
         intellijIdeaCommunity("2024.2.6")
         // Bundled JCEF is what powers VSCode-Chat-style markdown rendering.
-        // Android Studio ships JCEF too, so this works there.
+        // Android Studio ships JCEF too, so this works there. Listing it
+        // here does two things:
+        //   1. compileClasspath picks up org.cef.* / com.intellij.ui.jcef.*
+        //      so HermesChatToolWindowFactory.kt can import them
+        //   2. `./gradlew runIde` sandboxes include the JCEF plugin jar
+        //      automatically — without this, the sandbox IDE rejects
+        //      our plugin with "requires 'com.intellij.ui.jcef'".
+        // End users on Android Studio don't see a difference: AS has JCEF
+        // bundled, so the dependency is satisfied out of the box.
         bundledPlugin("com.intellij.java")
         bundledPlugin("org.intellij.intelliLang")
+        bundledPlugin("com.intellij.ui.jcef")
         testFramework(TestFrameworkType.Platform)
     }
 
