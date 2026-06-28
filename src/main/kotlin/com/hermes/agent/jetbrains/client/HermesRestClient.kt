@@ -3,6 +3,8 @@ package com.hermes.agent.jetbrains.client
 import com.hermes.agent.jetbrains.model.HermesModelOption
 import com.hermes.agent.jetbrains.model.HermesSessionSummary
 import com.hermes.agent.jetbrains.model.HermesStatus
+import java.net.Proxy
+import java.net.ProxySelector
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -36,6 +38,12 @@ class HermesRestClient(
     private val httpClient: HttpClient = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(5))
         .version(HttpClient.Version.HTTP_1_1) // uvicorn+FastAPI speak 1.1 by default
+        // Loopback calls must NEVER go through a system proxy — otherwise the
+        // JDK picks up HTTP_PROXY/HTTPS_PROXY from the environment and asks
+        // the user for proxy auth on every startup, even though 127.0.0.1 is
+        // literally the same machine. Passing Proxy.NO_PROXY bypasses both
+        // the JVM default ProxySelector and any -Dhttp.proxyHost settings.
+        .proxy(ProxySelector.of(Proxy.NO_PROXY))
         .build()
 
     private fun authedRequest(path: String): HttpRequest.Builder {
