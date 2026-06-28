@@ -1,8 +1,9 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+import org.jetbrains.intellij.platform.gradle.extensions.intellijPlatform
 
 plugins {
     id("org.jetbrains.kotlin.jvm") version "2.1.0"
-    id("org.jetbrains.intellij.platform") version "2.2.1"
+    id("org.jetbrains.intellij.platform")
     id("org.jetbrains.changelog") version "2.2.1"
 }
 
@@ -21,15 +22,11 @@ dependencies {
     // Android Studio Koala/Ladybug and newer). 2025.2 also accepted because
     // we don't use APIs that moved.
     intellijPlatform {
-        intellijIdea("2024.2.6")
+        intellijIdeaCommunity("2024.2.6")
         // Bundled JCEF is what powers VSCode-Chat-style markdown rendering.
         // Android Studio ships JCEF too, so this works there.
-        bundledPlugins(
-            "com.intellij.java",
-            "com.intellij.modules.platform",
-            "org.intellij.intelliLang",
-        )
-        plugins("com.intellij.java")
+        bundledPlugin("com.intellij.java")
+        bundledPlugin("org.intellij.intelliLang")
         testFramework(TestFrameworkType.Platform)
     }
 
@@ -56,8 +53,8 @@ intellijPlatform {
 }
 
 changelog {
-    version.set(provider { project.version })
-    path.set(file("CHANGELOG.md"))
+    version.set(provider { project.version.toString() })
+    path.set(file("CHANGELOG.md").canonicalPath)
     headerParserRegex.set("""(\d+\.\d+\.\d+).*""".toRegex())
     itemPrefix.set("-")
     keepUnreleasedSection.set(true)

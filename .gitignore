@@ -79,4 +79,4 @@ logs/
 # =====================================================
 # Local backups (WSL-side .git stash after Windows git reinit)
 # =====================================================
-.git.wsl-bak/
+.git.wsl-bak/msg*.txt
