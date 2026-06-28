@@ -3,12 +3,14 @@ package com.hermes.agent.jetbrains
 import com.hermes.agent.jetbrains.client.HermesClient
 import com.hermes.agent.jetbrains.model.HermesStatus
 import com.intellij.notification.NotificationGroupManager
-import com.intellij.notification.Notification
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.wm.ToolWindowManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /**
  * Post-startup hook.
@@ -31,31 +33,32 @@ class HermesChatStartupActivity : ProjectActivity {
 
     private val log = logger<HermesChatStartupActivity>()
 
-    override fun runActivity(project: Project) {
+    override suspend fun execute(project: Project) {
         val client = HermesClient.getInstance()
-        com.intellij.openapi.application.ApplicationManager.getApplication().executeOnPooledThread {
-            val reachable = client.isReachable()
-            com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
-                if (!reachable) {
-                    notifyDashboardDown(project)
-                } else {
-                    client.fetchStatusAsync { status: HermesStatus? ->
-                        log.info("Hermes dashboard reachable, version=${status?.version}")
-                    }
-                    // Auto-open the toolwindow the first time only.
-                    openToolWindowIfFirstTime(project)
+        
+        // Use Coroutines instead of manual executeOnPooledThread
+        val reachable = withContext(Dispatchers.IO) {
+            client.isReachable()
+        }
+
+        withContext(Dispatchers.Main) {
+            if (!reachable) {
+                notifyDashboardDown(project)
+            } else {
+                client.fetchStatusAsync { status: HermesStatus? ->
+                    log.info("Hermes dashboard reachable, version=${status?.version}")
                 }
+                // Auto-open the toolwindow the first time only.
+                openToolWindowIfFirstTime(project)
             }
         }
     }
 
     private fun notifyDashboardDown(project: Project) {
-        // Register the group once (idempotent) at notification time rather
-        // than at plugin-load time — startup activities should be cheap and
-        // not depend on user notification preferences.
+        // Notification group is now registered in plugin.xml
         val manager = NotificationGroupManager.getInstance()
         val group = manager.getNotificationGroup("Hermes Chat")
-            ?: manager.registerNotificationGroup("Hermes Chat")
+            ?: return // Should not happen if registered in plugin.xml
         group.createNotification(
             "Hermes dashboard not reachable",
             "Start it in a terminal with: hermes dashboard. The plugin will connect automatically once it's up.",

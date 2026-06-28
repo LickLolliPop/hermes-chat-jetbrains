@@ -68,6 +68,8 @@
         <!-- Post-startup: validate dashboard connectivity, surface failures. -->
         <postStartupActivity
                 implementation="com.hermes.agent.jetbrains.HermesChatStartupActivity"/>
+
+        <notificationGroup id="Hermes Chat" displayType="BALLOON" isLogByDefault="true"/>
     </extensions>
 
     <actions>

@@ -14,7 +14,9 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
-import org.cef.CefApp
+import com.intellij.ide.BrowserUtil
+import com.intellij.ui.jcef.JBCefBrowser
+import com.intellij.ui.jcef.JBCefBrowserBuilder
 import org.cef.browser.CefBrowser
 import org.cef.handler.CefLoadHandlerAdapter
 import java.awt.BorderLayout
@@ -26,6 +28,7 @@ import java.awt.GridBagLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.BorderFactory
+import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.SwingConstants
@@ -177,19 +180,22 @@ class HermesChatPanel(private val project: Project) {
     private fun ensureBrowser() {
         if (browser != null) return
         try {
-            val app: CefApp = CefApp.getInstance()
-            val client_ = app.createClient()
-            val b = client_.createBrowser(chatUrl(), false)
-            b.addLoadListener(object : CefLoadHandlerAdapter() {
+            val jbBrowser = JBCefBrowserBuilder()
+                .setUrl(chatUrl())
+                .setOffScreenRendering(true)
+                .build()
+            
+            jbBrowser.jbCefClient.addLoadHandler(object : CefLoadHandlerAdapter() {
                 override fun onLoadEnd(cefBrowser: CefBrowser, frame: org.cef.browser.CefFrame, httpStatusCode: Int) {
                     log.info("Hermes chat page loaded (status=$httpStatusCode)")
                 }
-            })
-            val uiComp = b.uiComponent as JComponent
+            }, jbBrowser.cefBrowser)
+
+            val uiComp = jbBrowser.component
             browserHost.add(uiComp, BorderLayout.CENTER)
             browserHost.revalidate()
             browserHost.repaint()
-            browser = b
+            browser = jbBrowser.cefBrowser
         } catch (t: Throwable) {
             log.warn("JCEF not available, falling back to 'Open in browser' link", t)
             browserHost.add(buildFallbackLink(), BorderLayout.CENTER)
@@ -209,10 +215,10 @@ class HermesChatPanel(private val project: Project) {
     }
 
     private fun chatUrl(): String {
-        val endpoint = client.state.endpoint.trim().ifEmpty { "http://127.0.0.1:9119" }
+        val endpoint = client.getState().endpoint.trim().ifEmpty { "http://127.0.0.1:9119" }
         // The dashboard exposes its chat surface at /chat. We pass the
         // session token via URL fragment so it never lands in HTTP logs.
-        val token = client.state.sessionToken
+        val token = client.getState().sessionToken
         return if (token.isBlank()) "$endpoint/chat"
         else "$endpoint/chat#token=$token"
     }
@@ -220,7 +226,7 @@ class HermesChatPanel(private val project: Project) {
     private fun openInExternalBrowser() {
         val url = chatUrl()
         ApplicationManager.getApplication().executeOnPooledThread {
-            com.intellij.ide.browsers.BrowserLauncher.getInstance().browse(url, project)
+            BrowserUtil.browse(url)
         }
     }
 }
@@ -234,14 +240,14 @@ private class FooterPanel {
         // Default placeholder; replaced when /api/model/options responds.
         addItem("(no models yet)")
     }
-    private val openBrowserBtn = com.intellij.ui.components.JButton("Open in browser").apply {
+    private val openBrowserBtn = JButton("Open in browser").apply {
         addActionListener { onOpenInBrowser?.invoke() }
     }
     private val panel = JBPanel<JBPanel<*>>().apply {
         layout = BorderLayout()
         border = JBUI.Borders.empty(4, 8)
         val left = JBLabel("Model: ").apply {
-            displayedMnemonic = 'M'
+            displayedMnemonicIndex = 0 // 'M' in "Model: "
             labelFor = modelPicker
         }
         val leftWrap = JBPanel<JBPanel<*>>(BorderLayout()).apply {
