@@ -1,0 +1,83 @@
+<!--
+  Hermes Agent — JetBrains Plugin
+
+  Registers the Hermes Chat tool window (VSCode Chat-style sidebar) so users
+  can talk to the local Hermes Agent dashboard from inside Android Studio
+  (and any IntelliJ Platform IDE).
+
+  Architecture: this plugin is a *thin shell* — all intelligence lives in
+  the local Hermes dashboard. The plugin hosts the dashboard's chat surface
+  inside a JCEF browser component and adds IDE-specific glue (toolwindow
+  registration, settings, future: code-context attach).
+-->
+<idea-plugin
+        xmlns:xi="http://www.w3.org/2001/XInclude"
+        url="https://hermes-agent.nousresearch.com/docs/clients/jetbrains">
+
+    <id>com.hermes.agent.jetbrains</id>
+    <name>Hermes Chat</name>
+    <vendor url="https://hermes-agent.nousresearch.com">Hermes Agent</vendor>
+
+    <description><![CDATA[
+        <h2>Hermes Chat for JetBrains IDEs</h2>
+        <p>
+            Adds a VSCode-Chat-style sidebar that talks to a locally-running
+            <a href="https://hermes-agent.nousresearch.com">Hermes Agent</a>
+            dashboard. All conversations, skills, memory, and cron jobs run
+            inside Hermes — this plugin is just an IDE shell.
+        </p>
+        <p>
+            <b>Why use it</b>: Hermes gives you skills, multi-session memory,
+            autonomous subagents, scheduled cron jobs, and code-aware chat
+            that survives across IDE restarts. Bundled IDE AI doesn't.
+        </p>
+        <p>
+            <b>Requirements</b>: a running Hermes dashboard on
+            <code>http://127.0.0.1:9119</code> (start with
+            <code>hermes dashboard</code>). The dashboard session token is
+            configured once in <i>Settings → Tools → Hermes Chat</i>.
+        </p>
+    ]]></description>
+
+    <!-- IntelliJ 2024.2+ and Android Studio Koala+ -->
+    <idea-version since-build="242" until-build="253.*"/>
+
+    <depends>com.intellij.modules.platform</depends>
+    <!-- JCEF (Chromium Embedded) — needed for the embedded dashboard chat
+         surface with full markdown / streaming / ANSI rendering. -->
+    <depends>com.intellij.ui.jcef</depends>
+
+    <resource-bundle>messages.HermesChatBundle</resource-bundle>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <!-- The main toolwindow — VSCode Chat-style right sidebar. -->
+        <toolWindow
+                id="Hermes Chat"
+                anchor="right"
+                secondary="true"
+                factoryClass="com.hermes.agent.jetbrains.ui.HermesChatToolWindowFactory"
+                icon="com.hermes.agent.jetbrains.ui.HermesIcons$ToolWindow"/>
+
+        <!-- Persistent settings (endpoint, token, model). -->
+        <applicationConfigurable
+                parentId="tools"
+                instance="com.hermes.agent.jetbrains.settings.HermesChatConfigurable"
+                id="hermes.chat.settings"
+                displayName="Hermes Chat"/>
+
+        <!-- Post-startup: validate dashboard connectivity, surface failures. -->
+        <postStartupActivity
+                implementation="com.hermes.agent.jetbrains.HermesChatStartupActivity"/>
+    </extensions>
+
+    <actions>
+        <!-- Quick toggle from the View menu for users who don't want the
+             toolbar icon. -->
+        <action id="hermes.chat.toggleToolWindow"
+                class="com.hermes.agent.jetbrains.ui.ToggleHermesChatAction"
+                text="Toggle Hermes Chat"
+                description="Show or hide the Hermes Chat tool window">
+            <keyboard-shortcut first-keystroke="control alt H" keymap="$default"/>
+        </action>
+    </actions>
+</idea-plugin>

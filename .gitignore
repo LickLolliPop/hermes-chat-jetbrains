@@ -1,0 +1,82 @@
+# =====================================================
+# Build outputs (Gradle + IntelliJ Plugin)
+# =====================================================
+/build/
+/out/
+/release/
+/dist/
+
+# Per-module build dirs (some multi-module layouts use these)
+/*/build/
+/*/out/
+
+# =====================================================
+# IDE — IntelliJ IDEA + Android Studio
+# =====================================================
+.idea/
+*.iml
+*.iws
+*.ipr
+*.iéb
+.vscode/
+
+# Android Studio specific
+/.idea/caches/
+/.idea/libraries/
+/.idea/modules.xml
+/.idea/workspace.xml
+/.idea/navEditor.xml
+/.idea/assetWizardSettings.xml
+/.idea/dictionaries
+/.idea/caches_build_file
+/.idea/shelf
+/.idea/tasks.xml
+/.idea/usage.statistics.xml
+/.idea/dictionaries/
+captures/
+
+# =====================================================
+# Gradle
+# =====================================================
+.gradle/
+**/.gradle/
+local.properties
+**/local.properties
+
+# Keep the wrapper itself (gradle/wrapper/gradle-wrapper.jar + .properties),
+# ignore Gradle's own caches and transient outputs.
+
+# =====================================================
+# JetBrains Marketplace signing
+# =====================================================
+# Certificates & private keys should never be committed.
+*.pem
+*.p12
+*.key
+*.keystore
+
+# =====================================================
+# OS / editor cruft
+# =====================================================
+.DS_Store
+Thumbs.db
+desktop.ini
+ehthumbs.db
+ehthumbs_vista.db
+*.swp
+*.swo
+*~
+
+# =====================================================
+# Logs / temp
+# =====================================================
+*.log
+logs/
+*.tmp
+*.bak
+*.swp
+
+# =====================================================
+# Local backups (WSL-side .git stash after Windows git reinit)
+# =====================================================
+.git.wsl-bak/
