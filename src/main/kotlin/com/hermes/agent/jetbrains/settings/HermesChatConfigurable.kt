@@ -32,15 +32,15 @@ import javax.swing.JPanel
 class HermesChatConfigurable : Configurable {
 
     private val client = HermesClient.getInstance()
-    private val endpointField = JBTextField(client.state.endpoint).apply {
+    private val endpointField = JBTextField(client.getState().endpoint).apply {
         toolTipText = "Default http://127.0.0.1:9119 — point to wherever your hermes dashboard runs"
     }
-    private val tokenField = JBTextField(client.state.sessionToken).apply {
+    private val tokenField = JBTextField(client.getState().sessionToken).apply {
         toolTipText = "Paste the token printed when 'hermes dashboard' started"
     }
     private val modelPicker = ComboBox<String>().apply {
         isEditable = false
-        addItem(client.state.defaultModelId.ifEmpty { "(default — unchanged)" })
+        addItem(client.getState().defaultModelId.ifEmpty { "(default — unchanged)" })
     }
     private val statusLabel = JBLabel(" ")
     private val testButton = JButton("Test connection")
@@ -67,9 +67,9 @@ class HermesChatConfigurable : Configurable {
     }
 
     override fun isModified(): Boolean {
-        return endpointField.text != client.state.endpoint ||
-            tokenField.text != client.state.sessionToken ||
-            (modelPicker.selectedItem as? String)?.let { extractId(it) } != client.state.defaultModelId.takeIf { it.isNotEmpty() }
+        return endpointField.text != client.getState().endpoint ||
+            tokenField.text != client.getState().sessionToken ||
+            (modelPicker.selectedItem as? String)?.let { extractId(it) } != client.getState().defaultModelId.takeIf { it.isNotEmpty() }
     }
 
     @Throws(ConfigurationException::class)
@@ -89,16 +89,16 @@ class HermesChatConfigurable : Configurable {
     }
 
     override fun reset() {
-        endpointField.text = client.state.endpoint
-        tokenField.text = client.state.sessionToken
+        endpointField.text = client.getState().endpoint
+        tokenField.text = client.getState().sessionToken
         val items = listOf("(default — unchanged)") +
             (modelPicker.model?.let { (0 until it.size).map(modelPicker.model::getElementAt) }.orEmpty())
         // Always rebuild so the dropdown shows the user's saved choice.
         modelPicker.removeAllItems()
         for (s in items) modelPicker.addItem(s)
         // Pre-select the saved model if any.
-        if (client.state.defaultModelId.isNotEmpty()) {
-            modelPicker.selectedItem = client.state.defaultModelId
+        if (client.getState().defaultModelId.isNotEmpty()) {
+            modelPicker.selectedItem = client.getState().defaultModelId
         }
     }
 
@@ -106,7 +106,7 @@ class HermesChatConfigurable : Configurable {
         statusLabel.text = "Testing…"
         // Temporarily set the in-memory state so the test reflects what
         // the user just typed, not the last-saved value.
-        val prior = client.state
+        val prior = client.getState()
         client.updateSettings(endpoint = endpointField.text, token = tokenField.text)
         com.intellij.openapi.application.ApplicationManager.getApplication().executeOnPooledThread {
             val status = client.testConnection()

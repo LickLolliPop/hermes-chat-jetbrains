@@ -41,9 +41,9 @@ class HermesRestClient(
         // Loopback calls must NEVER go through a system proxy — otherwise the
         // JDK picks up HTTP_PROXY/HTTPS_PROXY from the environment and asks
         // the user for proxy auth on every startup, even though 127.0.0.1 is
-        // literally the same machine. Passing Proxy.NO_PROXY bypasses both
-        // the JVM default ProxySelector and any -Dhttp.proxyHost settings.
-        .proxy(ProxySelector.of(Proxy.NO_PROXY))
+        // literally the same machine. Passing null to ProxySelector.of()
+        // creates a selector that always returns Proxy.NO_PROXY.
+        .proxy(ProxySelector.of(null))
         .build()
 
     private fun authedRequest(path: String): HttpRequest.Builder {

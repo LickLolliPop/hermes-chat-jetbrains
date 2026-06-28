@@ -47,12 +47,6 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
     override fun getState(): State = stateRef.get()
     override fun loadState(state: State) { stateRef.set(state) }
 
-    /**
-     * Convenience accessor for UI code — `client.state` reads more naturally
-     * than `client.getState()` at call sites.
-     */
-    val state: State get() = currentState()
-
     private fun currentState(): State = stateRef.get()
 
     fun updateSettings(endpoint: String? = null, token: String? = null, model: String? = null) {
