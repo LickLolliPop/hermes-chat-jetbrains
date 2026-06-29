@@ -15,11 +15,20 @@ import java.util.concurrent.TimeUnit
 /**
  * Thin REST client over the Hermes dashboard's HTTP API.
  *
- * Auth model (loopback-only — see web_server.py L183, L244):
- * - All authenticated routes take `Authorization: Bearer <token>`.
- * - The token is either injected via the `HERMES_DASHBOARD_SESSION_TOKEN`
- *   env var when starting the dashboard, or auto-generated per-process
- *   and printed to the dashboard's stdout (we read it via [SessionTokenProvider]).
+ * Auth model (loopback-only — see web_server.py L243-251, L331-345):
+ * - On loopback binds, the dashboard generates an ephemeral session token
+ *   (`secrets.token_urlsafe(32)`) and injects it into the SPA HTML as
+ *   `window.__HERMES_SESSION_TOKEN__`. Every `/api/*` call except the
+ *   public ones (`/api/status`, `/api/auth/*`) must echo it back via the
+ *   `X-Hermes-Session-Token` header — the dashboard returns 401 otherwise.
+ * - On OAuth/gated binds (`auth_required: true`), this header is NOT used:
+ *   the gate middleware sets a session cookie and our middleware defers to
+ *   it. We just don't send the header in that case (or it doesn't matter).
+ *
+ * Token discovery: see [DashboardTokenFetcher] — we GET `/` and pull
+ * `__HERMES_SESSION_TOKEN__="..."` out of the HTML. The token rotates
+ * every time the dashboard restarts, so we re-fetch on every probe cycle
+ * rather than caching forever.
  *
  * Why java.net.http and not OkHttp: IntelliJ Platform already ships the
  * JDK HttpClient, so this layer has zero added dependencies. OkHttp is
@@ -55,7 +64,9 @@ class HermesRestClient(
             .header("User-Agent", "HermesChat-IntelliJ/0.1.0")
         val token = tokenProvider()
         if (!token.isNullOrBlank()) {
-            builder.header("Authorization", "Bearer $token")
+            // Loopback-mode dashboard auth: see web_server.py _SESSION_HEADER_NAME.
+            // No "Bearer " prefix — the dashboard checks the raw token value.
+            builder.header("X-Hermes-Session-Token", token)
         }
         return builder
     }
@@ -162,8 +173,41 @@ class HermesRestClient(
     }
 
     private fun parseModelOptions(json: String): List<HermesModelOption> {
-        // Acceptable shapes: {"options":[{"id":..,"label":..,"provider":..}]}
-        // or a bare array of {"id":..,"label":..}.
+        // The dashboard's `/api/model/options` shape has changed across
+        // versions. As of v0.17.0 (June 2026) it returns a `providers`
+        // array, where each provider has a `models` field that is a flat
+        // list of model id strings. Older builds returned either:
+        //   - `{"options":[{"id":..,"label":..,"provider":..}]}`
+        //   - a bare array of `{"id":..,"label":..}` objects
+        //
+        // We accept all three shapes. Unknown shapes return an empty list
+        // and the UI shows "(no models available)" — better than crashing.
+        val providerShape = extractArray(json, listOf("providers"))
+        if (providerShape.isNotEmpty()) {
+            // v0.17.0 shape: providers[].models: ["model/id", ...]
+            val out = mutableListOf<HermesModelOption>()
+            for (provJson in providerShape) {
+                val providerSlug = extractString(provJson, "slug") ?: "unknown"
+                val providerName = extractString(provJson, "name") ?: providerSlug
+                val modelsArr = extractArray(provJson, listOf("models"))
+                for (modelJson in modelsArr) {
+                    // The model entry is a bare string like
+                    //   "anthropic/claude-opus-4.8"
+                    // Strip the JSON quotes our extractor leaves behind.
+                    val id = modelJson.trim().trim('"').trim()
+                    if (id.isBlank()) continue
+                    out.add(
+                        HermesModelOption(
+                            id = id,
+                            label = "$id — $providerName",
+                            provider = providerSlug,
+                        )
+                    )
+                }
+            }
+            return out
+        }
+        // Legacy shape(s): objects with id/label/provider fields.
         val objects = extractArray(json, listOf("options", "models", "data"))
         if (objects.isEmpty()) return emptyList()
         return objects.mapNotNull { obj ->

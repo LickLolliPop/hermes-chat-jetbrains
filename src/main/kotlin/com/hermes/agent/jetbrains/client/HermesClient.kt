@@ -36,10 +36,19 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
     )
 
     private val stateRef = AtomicReference(State())
+    private val tokenFetcher by lazy {
+        DashboardTokenFetcher(endpointProvider = { URI.create(currentState().endpoint.trim().ifEmpty { "http://127.0.0.1:9119" }) })
+    }
+    // Cached auto-fetched token. Null means "not fetched yet" or "fetch
+    // failed". Cleared on settings update so a new endpoint re-triggers
+    // discovery.
+    @Volatile private var autoToken: String? = null
+    @Volatile private var autoTokenAttempted: Boolean = false
+
     private val restClient by lazy {
         HermesRestClient(
             endpointProvider = { URI.create(currentState().endpoint.trim().ifEmpty { "http://127.0.0.1:9119" }) },
-            tokenProvider = { currentState().sessionToken.takeIf { it.isNotBlank() } },
+            tokenProvider = { resolveToken() },
         )
     }
 
@@ -49,6 +58,27 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
 
     private fun currentState(): State = stateRef.get()
 
+    /**
+     * Returns the token to use for the next request.
+     *
+     * Priority:
+     *   1. User-configured session token in settings (always wins —
+     *      this is the "I know what I'm doing" escape hatch for users
+     *      who run the dashboard with `HERMES_DASHBOARD_SESSION_TOKEN=...`
+     *      env var and want a stable value).
+     *   2. Auto-fetched token from the dashboard's index.html (cached
+     *      after the first successful fetch — the token is stable for
+     *      the lifetime of the dashboard process).
+     *   3. Null → no header sent. The user sees auth errors and can
+     *      either wait for the auto-fetch on the next probe or paste
+     *      a token manually.
+     */
+    private fun resolveToken(): String? {
+        val manual = currentState().sessionToken.takeIf { it.isNotBlank() }
+        if (manual != null) return manual
+        return autoToken
+    }
+
     fun updateSettings(endpoint: String? = null, token: String? = null, model: String? = null) {
         val current = stateRef.get()
         stateRef.set(current.copy(
@@ -56,6 +86,12 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
             sessionToken = token ?: current.sessionToken,
             defaultModelId = model ?: current.defaultModelId,
         ))
+        // Endpoint change invalidates the cached auto-token. The next
+        // resolveToken() call will re-fetch against the new endpoint.
+        if (endpoint != null) {
+            autoToken = null
+            autoTokenAttempted = false
+        }
     }
 
     // -- Async API (preferred from UI code) -------------------------------
@@ -96,6 +132,31 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
 
     /** For the settings "Test connection" button. */
     fun testConnection(): HermesStatus? = restClient.getStatus()
+
+    /**
+     * Make sure we have a session token cached. Safe to call repeatedly:
+     * if the user has manually set a token in settings, this is a no-op.
+     * If we've already auto-fetched, this is a no-op. Otherwise it scrapes
+     * the dashboard's index.html for the ephemeral token.
+     *
+     * Best invoked from the panel's status-probe cycle (every 8s) so a
+     * freshly-started dashboard becomes usable without a manual refresh.
+     * Returns true if a token is now available (manual or auto).
+     */
+    fun ensureToken(): Boolean {
+        if (currentState().sessionToken.isNotBlank()) return true
+        if (autoToken != null) return true
+        if (autoTokenAttempted) return false
+        autoTokenAttempted = true
+        val fetched = tokenFetcher.fetchToken()
+        if (fetched != null) {
+            autoToken = fetched
+            com.intellij.openapi.diagnostic.logger<HermesClient>().info(
+                "Auto-fetched dashboard session token (${fetched.length} chars)"
+            )
+        }
+        return autoToken != null
+    }
 
     companion object {
         @JvmStatic

@@ -18,6 +18,8 @@ import com.intellij.ide.BrowserUtil
 import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefBrowserBuilder
 import org.cef.browser.CefBrowser
+import org.cef.browser.CefFrame
+import org.cef.handler.CefLoadHandler
 import org.cef.handler.CefLoadHandlerAdapter
 import java.awt.BorderLayout
 import java.awt.Color
@@ -139,6 +141,10 @@ class HermesChatPanel(private val project: Project) {
 
     private fun refreshStatus() {
         ApplicationManager.getApplication().executeOnPooledThread {
+            // Make sure we have a session token before any authenticated
+            // call. The first probe gets a chance to scrape the index.html;
+            // subsequent probes short-circuit (see HermesClient.ensureToken).
+            client.ensureToken()
             val reachable = client.isReachable()
             ApplicationManager.getApplication().invokeLater {
                 if (reachable) {
@@ -179,15 +185,30 @@ class HermesChatPanel(private val project: Project) {
 
     private fun ensureBrowser() {
         if (browser != null) return
-        
+
         val isSupported = try {
             com.intellij.ui.jcef.JBCefApp.isSupported()
         } catch (t: Throwable) {
+            log.warn("JBCefApp.isSupported() threw", t)
             false
         }
 
         if (!isSupported) {
-            log.warn("JCEF not supported by the IDE runtime, falling back to 'Open in browser' link")
+            // JCEF is unavailable in this runtime. Common causes in a
+            // `./gradlew runIde` sandbox:
+            //   - the JBR shipped with the target IDE doesn't include
+            //     the Cef native binaries
+            //   - the sandbox was launched without the
+            //     `ide.supported.feature.jcef=true` system property
+            //   - a previous JCEF instance in the same JVM died and
+            //     poisoned the registry
+            // The fallback "Open in browser" link below is the right UX
+            // for all three: the user can still get to /chat.
+            log.warn(
+                "JCEF not supported by the IDE runtime, falling back to 'Open in browser' link. " +
+                "If you're running inside `./gradlew runIde`, this usually means the sandbox " +
+                "JBR is missing the Cef native binaries. Real Android Studio installs are unaffected."
+            )
             browserHost.add(buildFallbackLink(), BorderLayout.CENTER)
             browserHost.revalidate()
             return
@@ -198,10 +219,19 @@ class HermesChatPanel(private val project: Project) {
                 .setUrl(chatUrl())
                 .setOffScreenRendering(true)
                 .build()
-            
+
             jbBrowser.jbCefClient.addLoadHandler(object : CefLoadHandlerAdapter() {
                 override fun onLoadEnd(cefBrowser: CefBrowser, frame: org.cef.browser.CefFrame, httpStatusCode: Int) {
                     log.info("Hermes chat page loaded (status=$httpStatusCode)")
+                }
+                override fun onLoadError(
+                    cefBrowser: CefBrowser,
+                    frame: CefFrame,
+                    errorCode: CefLoadHandler.ErrorCode,
+                    errorText: String,
+                    failedUrl: String
+                ) {
+                    log.warn("Hermes chat page failed to load: $errorText (url=$failedUrl, code=$errorCode)")
                 }
             }, jbBrowser.cefBrowser)
 
@@ -211,7 +241,7 @@ class HermesChatPanel(private val project: Project) {
             browserHost.repaint()
             browser = jbBrowser.cefBrowser
         } catch (t: Throwable) {
-            log.warn("JCEF not available, falling back to 'Open in browser' link", t)
+            log.warn("JBCefBrowserBuilder.build() threw, falling back to 'Open in browser' link", t)
             browserHost.add(buildFallbackLink(), BorderLayout.CENTER)
             browserHost.revalidate()
         }
@@ -288,8 +318,16 @@ private class FooterPanel {
     val component: JComponent get() = panel
 
     fun setModels(models: List<com.hermes.agent.jetbrains.model.HermesModelOption>) {
-        if (models.isEmpty()) return
+        // Always reset the dropdown so we don't leave a stale
+        // "(no models yet)" placeholder when an empty list comes back
+        // from the dashboard (e.g. provider not configured).
         modelPicker.removeAllItems()
+        if (models.isEmpty()) {
+            modelPicker.addItem("(no models available)")
+            modelPicker.isEnabled = false
+            return
+        }
+        modelPicker.isEnabled = true
         for (m in models) {
             // We display "label (id)" so the picker shows a human-readable
             // name but the action listener still receives the real model id.
