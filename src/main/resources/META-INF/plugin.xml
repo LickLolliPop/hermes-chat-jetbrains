@@ -43,9 +43,7 @@
     <idea-version since-build="242" until-build="253.*"/>
 
     <depends>com.intellij.modules.platform</depends>
-    <!-- JCEF (Chromium Embedded) — needed for the embedded dashboard chat
-         surface with full markdown / streaming / ANSI rendering. -->
-    <depends>com.intellij.ui.jcef</depends>
+    <depends optional="true">com.intellij.modules.jcef</depends>
 
     <resource-bundle>messages.HermesChatBundle</resource-bundle>
 

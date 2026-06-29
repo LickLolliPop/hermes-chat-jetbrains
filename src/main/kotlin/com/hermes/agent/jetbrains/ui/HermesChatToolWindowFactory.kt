@@ -179,6 +179,20 @@ class HermesChatPanel(private val project: Project) {
 
     private fun ensureBrowser() {
         if (browser != null) return
+        
+        val isSupported = try {
+            com.intellij.ui.jcef.JBCefApp.isSupported()
+        } catch (t: Throwable) {
+            false
+        }
+
+        if (!isSupported) {
+            log.warn("JCEF not supported by the IDE runtime, falling back to 'Open in browser' link")
+            browserHost.add(buildFallbackLink(), BorderLayout.CENTER)
+            browserHost.revalidate()
+            return
+        }
+
         try {
             val jbBrowser = JBCefBrowserBuilder()
                 .setUrl(chatUrl())
