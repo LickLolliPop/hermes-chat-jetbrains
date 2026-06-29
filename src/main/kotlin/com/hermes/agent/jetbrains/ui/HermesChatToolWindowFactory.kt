@@ -181,6 +181,13 @@ class HermesChatPanel(private val project: Project) : Disposable {
 
     private var statusTimer: Timer? = null
 
+    // Backoff state for refreshStatus. Counts consecutive unreachable
+    // probes so the 8s polling timer can stretch out to 30s/60s/300s
+    // when the dashboard is clearly down — keeps idle IDE sessions
+    // from hammering a dead socket at 0.125 req/s forever. Reset to 0
+    // on any successful probe.
+    private var consecutiveUnreachable = 0
+
     init {
         header.addMouseListener(headerMouseListener)
         footer.onOpenInBrowser = { openInExternalBrowser() }
@@ -198,16 +205,23 @@ class HermesChatPanel(private val project: Project) : Disposable {
         // here — the IDE shell should be visible immediately even if the
         // dashboard is down.
         refreshStatus()
-        // Probe every 8s. Cheap (HEAD-style), keeps the green/grey dot honest.
+        // Probe every PROBE_INTERVAL_MS by default. Cheap (HEAD-style),
+        // keeps the green/grey dot honest. When the dashboard is
+        // unreachable, refreshStatus() stretches this out via
+        // consecutiveUnreachable backoff (8s → 30s → 60s → 300s).
         // The timer is held on the field (not just the panel) so dispose()
         // can stop it on toolwindow teardown. Lifecycle wiring
         // (Disposer.register(project, panel)) happens in
         // HermesChatToolWindowFactory.createToolWindowContent — not here,
         // because Disposer.register takes exactly 2 Disposables and cannot
         // be called with a 3rd "on dispose" lambda.
-        statusTimer = Timer(8_000) { refreshStatus() }.apply {
+        statusTimer = Timer(PROBE_INTERVAL_MS) { refreshStatus() }.apply {
             start()
         }
+    }
+
+    private companion object {
+        const val PROBE_INTERVAL_MS = 8_000L
     }
 
     val component: JComponent get() = root
@@ -236,22 +250,33 @@ class HermesChatPanel(private val project: Project) : Disposable {
             // Fix: only kick off the authenticated model fetch when there's
             // actually a token to send. Otherwise log and let the next tick
             // (which will re-enter ensureToken first) handle it.
-            log.info("refreshStatus: tick (autoToken=${client.hasAutoToken()}, endpoint=${client.getState().endpoint})")
+            //
+            // Log volume: per-tick trace lines are DEBUG now (was INFO);
+            // an idle 8h IDE session used to add ~18k INFO lines to
+            // idea.log which drowned real errors. One INFO line per tick
+            // is enough — the "reachable but no token" branch is the only
+            // one that frequently needs debugging and is already explicit.
+            log.debug("refreshStatus: tick (autoToken=${client.hasAutoToken()}, endpoint=${client.getState().endpoint})")
             client.ensureToken()
             val reachable = client.isReachable()
-            log.info("refreshStatus: isReachable=$reachable")
+            log.debug("refreshStatus: isReachable=$reachable")
             ApplicationManager.getApplication().invokeLater {
                 if (reachable) {
-                    log.info("refreshStatus: reachable, kicking off fetchStatus/fetchModels")
+                    // Reset backoff on any successful probe.
+                    if (consecutiveUnreachable != 0) {
+                        consecutiveUnreachable = 0
+                        rescheduleTimer(PROBE_INTERVAL_MS)
+                    }
+                    log.debug("refreshStatus: reachable, kicking off fetchStatus/fetchModels")
                     // Fetch full status for the version string once we're
                     // sure the dashboard is up.
                     client.fetchStatusAsync { status ->
-                        log.info("refreshStatus: fetchStatus returned version=${status?.version}")
+                        log.debug("refreshStatus: fetchStatus returned version=${status?.version}")
                         renderStatus(status)
                     }
                     if (client.hasAutoToken() || client.getState().sessionToken.isNotBlank()) {
                         client.fetchModelsAsync { modelList ->
-                            log.info(
+                            log.debug(
                                 "refreshStatus: fetchModels returned ${modelList.options.size} models " +
                                     "(currentModelId=${modelList.currentModelId})"
                             )
@@ -261,7 +286,7 @@ class HermesChatPanel(private val project: Project) : Disposable {
                             footer.setCurrentModel(currentLabel)
                         }
                     } else {
-                        log.info("refreshStatus: reachable but no token yet — deferring model fetch to next tick")
+                        log.debug("refreshStatus: reachable but no token yet — deferring model fetch to next tick")
                         // Surface the fetch error in the footer so the user
                         // sees *why* the model list is empty, and gets a
                         // "↻ Retry" button to override the autoToken latch.
@@ -276,11 +301,43 @@ class HermesChatPanel(private val project: Project) : Disposable {
                     // we know the dashboard is up so loading /chat will work.
                     ensureBrowser()
                 } else {
-                    log.info("refreshStatus: UNREACHABLE — skipping model fetch")
+                    // Exponential-ish backoff: 1 failure → still 8s
+                    // (avoid jitter on a single transient blip); 2-5 → 30s;
+                    // 6-20 → 60s; 21+ → 300s. Reset by any reachable=true.
+                    consecutiveUnreachable++
+                    val newDelay = backoffMs(consecutiveUnreachable)
+                    log.info(
+                        "refreshStatus: UNREACHABLE (consecutive=$consecutiveUnreachable) " +
+                            "— next probe in ${newDelay / 1000}s"
+                    )
+                    rescheduleTimer(newDelay)
                     renderUnreachable()
                 }
             }
         }
+    }
+
+    /**
+     * Stretch the polling interval based on how long the dashboard has
+     * been down. Cheap to call, runs entirely on EDT.
+     */
+    private fun backoffMs(failures: Int): Long = when {
+        failures <= 1 -> PROBE_INTERVAL_MS       // 8s — first blip, no penalty
+        failures <= 5 -> 30_000L                  // dashboard likely just restarted
+        failures <= 20 -> 60_000L                 // dashboard has been down a while
+        else -> 300_000L                          // 5min — clearly gone, stop hammering
+    }
+
+    /**
+     * Reschedule the 8s polling timer to a new delay. Must run on EDT
+     * (javax.swing.Timer is single-threaded). Caller is responsible for
+     * invokeLater { ... } if not already on EDT.
+     */
+    private fun rescheduleTimer(delayMs: Long) {
+        val timer = statusTimer ?: return
+        if (timer.delay == delayMs) return  // no-op
+        timer.delay = delayMs
+        timer.restart()
     }
 
     private fun renderStatus(status: HermesStatus?) {

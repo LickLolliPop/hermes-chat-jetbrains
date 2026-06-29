@@ -4,6 +4,47 @@ All notable changes to Hermes Chat for JetBrains IDEs.
 
 ## [Unreleased]
 
+### Fixed
+- **P0 listener accumulation**: `HermesChatPanel.renderStatus()` was calling
+  `header.addMouseListener(new MouseAdapter { ... })` on every 8s status
+  probe, so a few hours of idle uptime accumulated ~1500 anonymous
+  listeners on the header JBLabel. A single mouse hover then fired all
+  of them simultaneously, spawning ~1500 `msedge.exe` processes and
+  freezing the entire IDE. The header mouse listener is now attached
+  once in `init {}` from a persistent field, and `buildFallbackLink()`
+  uses a similar persistent HyperlinkListener field instead of an
+  anonymous lambda. See `E:\Temp\androidPlugin\HermesChat\BUG-2026-06-29-HermesChat-Listener-Leak.md`
+  for the full freeze-thread-dump analysis.
+- **`openInExternalBrowser()` debounce (500 ms)**: Added as a safety net
+  using `AtomicLong.compareAndSet` for thread-safe lock-free check. If
+  a listener ever leaks again (regression or new code), repeated calls
+  within half a second are silently dropped instead of spawning
+  1000+ browser processes.
+- **Timer / listener leak across project close**: `HermesChatPanel` now
+  implements `com.intellij.openapi.Disposable`; its `dispose()` stops
+  the 8s refresh timer and removes the header mouse listener. The
+  panel is registered with the project-level Disposer tree in
+  `HermesChatToolWindowFactory.createToolWindowContent`, so the IDE
+  automatically calls `panel.dispose()` when the project closes. No
+  more leaking timers or listeners across long-lived IDE sessions.
+
+### Changed
+- **Polling timer backoff on unreachable dashboard**: The 8s refresh
+  timer now stretches out when the dashboard is down — `8s → 30s → 60s
+  → 300s` based on `consecutiveUnreachable` count (reset by any
+  successful probe). Idle IDE sessions no longer hammer a dead socket
+  at 0.125 req/s indefinitely. A single transient blip still uses 8s
+  to avoid UI jitter.
+- **Per-tick log lines downgraded to DEBUG**: `refreshStatus` was
+  logging 5 INFO lines per tick (tick, isReachable, kicking off,
+  fetchStatus, fetchModels). An idle 8h session added ~18k lines to
+  `idea.log`, drowning real errors. All trace lines now log at DEBUG;
+  the only per-tick INFO is the UNREACHABLE state-change line
+  (which carries the consecutive-failure count and next probe delay).
+  Bump `#com.hermes.agent.jetbrains.ui.HermesChatPanel` to DEBUG in
+  `Help → Diagnostic Tools → Debug Log Settings` to see the full
+  trace when needed.
+
 ### Added
 - ↻ Restart button in the toolwindow header (right side of the status row).
   Restarts the WSL-hosted Hermes dashboard in place: stops the running
