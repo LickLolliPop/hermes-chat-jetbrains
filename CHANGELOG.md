@@ -61,6 +61,25 @@ All notable changes to Hermes Chat for JetBrains IDEs.
   autoToken latch in HermesClient and re-runs the fetch + status probe
   immediately. The previous behavior was a silent "Model: (loading…)"
   that never updated after the first failed fetch.
+- **Regression tests for the P0 listener-accumulation fix**:
+  - `HermesChatPanelBackoffTest` — pure-function tests for the
+    backoff staircase (4 plateaus, monotonicity, edge values). Runs
+    as plain JUnit 5, no IDE fixture needed.
+  - `HermesChatPanelListenerAccumulationTest` — spins up an IDE
+    fixture, creates a `HermesChatPanel`, calls `renderStatus()`
+    10 000 times to simulate ~22h of idle 8s timer ticks, then
+    introspects the header's `EventListenerList` and asserts there
+    is still exactly one `MouseListener` attached. Also dispatches
+    a synthetic mouse click to verify the panel doesn't throw on
+    the post-fix code path.
+  Both tests would have failed loudly on the pre-fix code that
+  crashed the IDE on 2026-06-29.
+- **Test seams**: `HermesChatPanel.renderStatus()`,
+  `HermesChatPanel.headerForTest()`, and `HermesChatPanel.backoffMs()`
+  are now `internal` (was `private`) so the test module can exercise
+  them directly without reflection. Production code never calls any
+  of them — they're package-internal on purpose, so misuse would
+  have to deliberately widen visibility to leak.
 
 ### Changed
 - Toolwindow header restructured from a single `JBLabel` to a

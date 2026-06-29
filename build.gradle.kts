@@ -40,6 +40,12 @@ dependencies {
 
     // OkHttp is the canonical HTTP/WS client in IntelliJ Platform plugins.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    // kotlin("test") pulls JUnit 5 (Jupiter) by default in Kotlin 2.1,
+    // which is what the testFramework(TestFrameworkType.Platform)
+    // entry above also depends on. Adding an explicit junit-jupiter
+    // dependency here is redundant and risks version conflicts with
+    // whatever the IntelliJ test framework bundles internally.
+    testImplementation(kotlin("test"))
 }
 
 kotlin {

@@ -119,6 +119,16 @@ class HermesChatPanel(private val project: Project) : Disposable {
         foreground = UIUtil.getContextHelpForeground()
         icon = HermesIcons.ToolWindowSmall
     }
+
+    /**
+     * Test seam: exposes the header JBLabel so
+     * [com.hermes.agent.jetbrains.ui.HermesChatPanelListenerAccumulationTest]
+     * can introspect the listener list without going through reflection.
+     * Production code never calls this — it's package-internal on
+     * purpose, so a misuse would have to deliberately widen visibility
+     * to leak.
+     */
+    internal fun headerForTest(): JBLabel = header
     private val footer = FooterPanel()
 
     // Refresh button — sits in the header row, opposite the status label.
@@ -320,8 +330,12 @@ class HermesChatPanel(private val project: Project) : Disposable {
     /**
      * Stretch the polling interval based on how long the dashboard has
      * been down. Cheap to call, runs entirely on EDT.
+     *
+     * `internal` (not private) so [HermesChatPanelBackoffTest] can exercise
+     * the staircase directly. The function is still pure and side-effect
+     * free, so exposing it for tests is safe.
      */
-    private fun backoffMs(failures: Int): Long = when {
+    internal fun backoffMs(failures: Int): Long = when {
         failures <= 1 -> PROBE_INTERVAL_MS       // 8s — first blip, no penalty
         failures <= 5 -> 30_000L                  // dashboard likely just restarted
         failures <= 20 -> 60_000L                 // dashboard has been down a while
@@ -340,7 +354,17 @@ class HermesChatPanel(private val project: Project) : Disposable {
         timer.restart()
     }
 
-    private fun renderStatus(status: HermesStatus?) {
+    /**
+     * Render the connected-state header. After the P0 fix this is a
+     * pure UI update — no listener attachment, no allocations beyond
+     * the text/foreground/cursor setters.
+     *
+     * `internal` so [HermesChatPanelListenerAccumulationTest] can call
+     * it directly to simulate the 8s timer tick path that previously
+     * leaked listeners. (refreshStatus() goes through HTTP, so we
+     * exercise the UI-only update branch in tests.)
+     */
+    internal fun renderStatus(status: HermesStatus?) {
         val version = status?.version ?: "unknown"
         header.text = "  Hermes $version — connected"
         header.foreground = JBColor(Color(0x2E7D32), Color(0x81C784))
