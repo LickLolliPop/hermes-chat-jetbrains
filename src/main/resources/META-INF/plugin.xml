@@ -54,7 +54,7 @@
                 anchor="right"
                 secondary="true"
                 factoryClass="com.hermes.agent.jetbrains.ui.HermesChatToolWindowFactory"
-                icon="com.hermes.agent.jetbrains.ui.HermesIcons$ToolWindow"/>
+                icon="com.hermes.agent.jetbrains.ui.HermesIcons.ToolWindow"/>
 
         <!-- Persistent settings (endpoint, token, model). -->
         <applicationConfigurable
