@@ -32,6 +32,8 @@ import java.awt.GridBagLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.BorderFactory
+import javax.swing.Box
+import javax.swing.BoxLayout
 import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
@@ -145,6 +147,13 @@ class HermesChatPanel(private val project: Project) {
 
     init {
         footer.onOpenInBrowser = { openInExternalBrowser() }
+        // Retry handler: invoked when the user clicks the "↻ Retry" button
+        // that appears next to the model label when the dashboard token
+        // fetch has failed. The handler clears the autoToken latch inside
+        // HermesClient so ensureToken() is allowed to try again, then
+        // immediately kicks off a status probe (which will fetch the
+        // model list if the retry succeeded).
+        footer.onRetryTokenFetch = { onRetryTokenClicked() }
         // Model selection is handled by the embedded dashboard SPA.
         // The IDE footer only reflects the current model (read-only).
 
@@ -211,6 +220,15 @@ class HermesChatPanel(private val project: Project) {
                         }
                     } else {
                         log.info("refreshStatus: reachable but no token yet — deferring model fetch to next tick")
+                        // Surface the fetch error in the footer so the user
+                        // sees *why* the model list is empty, and gets a
+                        // "↻ Retry" button to override the autoToken latch.
+                        // Without this, the footer stays "Model: (loading…)"
+                        // forever after the first failed fetch.
+                        val err = client.lastTokenError()
+                        if (err != null) {
+                            footer.setTokenError(err)
+                        }
                     }
                     // If the browser hasn't been initialized yet, do it now —
                     // we know the dashboard is up so loading /chat will work.
@@ -362,6 +380,42 @@ class HermesChatPanel(private val project: Project) {
             }
         }
     }
+
+    /**
+     * Fires when the user clicks the "↻ Retry" button in the footer
+     * (visible when the last token fetch failed). Clears the autoToken
+     * latch in HermesClient so [HermesClient.ensureToken] is allowed
+     * to try again, then immediately re-runs the status probe so the
+     * new attempt's outcome is reflected in the footer without
+     * waiting for the next 8s tick.
+     *
+     * Runs the token fetch on a pooled thread (mirroring the
+     * [refreshStatus] threading model) — the underlying HTTP call has
+     * a 2s timeout, so worst case the user sees a 2s pause before
+     * the footer updates. The button is disabled for that window so
+     * a frantic user can't queue up multiple retries.
+     */
+    private fun onRetryTokenClicked() {
+        log.info("HermesChatPanel: user clicked ↻ Retry — re-attempting token fetch")
+        // Clear the error display immediately so the user sees feedback
+        // (footer flips back to "Model: (loading…)" while we retry).
+        footer.setTokenError(null)
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val gotToken = client.retryTokenFetch()
+            ApplicationManager.getApplication().invokeLater {
+                if (gotToken) {
+                    log.info("HermesChatPanel: token retry succeeded — re-running status probe")
+                    // refreshStatus will pick up the now-cached token and
+                    // populate the model list + clear the error state.
+                    refreshStatus()
+                } else {
+                    val err = client.lastTokenError() ?: "(unknown error)"
+                    log.warn("HermesChatPanel: token retry failed: $err")
+                    footer.setTokenError(err)
+                }
+            }
+        }
+    }
 }
 
 /**
@@ -376,14 +430,37 @@ class HermesChatPanel(private val project: Project) {
  * the last non-empty label it successfully received; transient null/blank
  * inputs are no-ops. Initial state is "Model: (loading…)" so the user can
  * distinguish "haven't heard back yet" from "explicitly no model".
+ *
+ * Error state: when [setTokenError] is called with a non-null message, the
+ * label switches to "Model: ✗ {message}" in red and a "↻ Retry" button
+ * appears next to the "Open in browser" button. The button is wired up by
+ * [onRetryTokenFetch] in HermesChatPanel. Calling [setTokenError] with
+ * null returns the footer to the normal "Model: …" state.
  */
 private class FooterPanel {
     private val modelLabel = JBLabel("Model: (loading…)").apply {
         foreground = UIUtil.getInactiveTextColor() // gray / disabled look
         border = JBUI.Borders.emptyLeft(8)
     }
+    // The "Model: ✗ {message}" / "Model: {name}" prefix differs by state.
+    // We keep the bare label text and rebuild the prefix in setCurrentModel
+    // and setTokenError so there's no need to mutate a shared "Model: " string.
+    private val retryButton = JButton("↻ Retry").apply {
+        isVisible = false
+        toolTipText = "Retry fetching the dashboard session token"
+        addActionListener { onRetryTokenFetch?.invoke() }
+    }
     private val openBrowserBtn = JButton("Open in browser").apply {
         addActionListener { onOpenInBrowser?.invoke() }
+    }
+    // East-side button row: retry (hidden when no error) + open-in-browser.
+    // We pack them in a sub-panel so BorderLayout.EAST stays a single
+    // component while still showing both buttons inline.
+    private val eastRow = JBPanel<JBPanel<*>>().apply {
+        layout = BoxLayout(this, BoxLayout.X_AXIS)
+        add(retryButton)
+        add(Box.createHorizontalStrut(4))
+        add(openBrowserBtn)
     }
     private val panel = JBPanel<JBPanel<*>>().apply {
         layout = BorderLayout()
@@ -392,10 +469,11 @@ private class FooterPanel {
             add(modelLabel, BorderLayout.CENTER)
         }
         add(leftWrap, BorderLayout.CENTER)
-        add(openBrowserBtn, BorderLayout.EAST)
+        add(eastRow, BorderLayout.EAST)
     }
 
     var onOpenInBrowser: (() -> Unit)? = null
+    var onRetryTokenFetch: (() -> Unit)? = null
 
     val component: JComponent get() = panel
 
@@ -407,12 +485,43 @@ private class FooterPanel {
      *                        (transient 401, empty list, missing currentModelId).
      *                        Null/blank inputs are ignored once we have a known-good
      *                        label, so a single failed tick can't blank out the UI.
+     *
+     * Calling this with a non-blank value clears the error state set by
+     * [setTokenError] — the model becoming available implies the token
+     * fetch succeeded.
      */
     fun setCurrentModel(modelLabelText: String?) {
         // Drop null/blank — preserve last known-good label.
         val resolved = modelLabelText?.takeIf { it.isNotBlank() } ?: return
         ApplicationManager.getApplication().invokeLater {
             modelLabel.text = "Model: $resolved"
+            modelLabel.foreground = UIUtil.getLabelForeground()
+            retryButton.isVisible = false
+        }
+    }
+
+    /**
+     * Show a token-fetch error in place of the model label, plus a Retry
+     * button. Pass null to clear (back to the model-label state).
+     */
+    fun setTokenError(message: String?) {
+        ApplicationManager.getApplication().invokeLater {
+            if (message == null) {
+                // Cleared externally — restore the default look. The next
+                // refreshStatus() tick will repopulate the model label.
+                modelLabel.foreground = UIUtil.getInactiveTextColor()
+                retryButton.isVisible = false
+            } else {
+                // The "✗ " glyph is a heavy ballot X (U+2717) — rendered
+                // by any platform font on IntelliJ 2024.2+; falls back
+                // to a textual "(error)" if the glyph is missing.
+                modelLabel.text = "Model: ✗ $message"
+                modelLabel.foreground = JBColor(
+                    Color(0xC62828),  // light theme: dark red
+                    Color(0xEF9A9A),  // dark theme:  light red
+                )
+                retryButton.isVisible = true
+            }
         }
     }
 }

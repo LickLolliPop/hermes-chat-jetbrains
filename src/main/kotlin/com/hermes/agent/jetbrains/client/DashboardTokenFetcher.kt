@@ -36,6 +36,17 @@ class DashboardTokenFetcher(
 ) {
     private val log = logger<DashboardTokenFetcher>()
 
+    /**
+     * Last fetch error message, or null on success / no attempt yet.
+     * Surfaced to the UI so the user sees *why* the model picker is
+     * empty (e.g. "Connection refused", "HTTP 500") instead of just
+     * a silent "(loading…)" that never updates.
+     *
+     * Public so HermesClient can read it for the footer's retry button.
+     */
+    @Volatile var lastError: String? = null
+        private set
+
     // Dedicated HttpClient — never goes through a system proxy, same
     // reason as HermesRestClient: loopback is the same machine.
     private val httpClient: HttpClient = HttpClient.newBuilder()
@@ -62,14 +73,26 @@ class DashboardTokenFetcher(
                 .build()
             val resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString())
             if (resp.statusCode() !in 200..299) {
-                log.debug("Token fetch: dashboard returned HTTP ${resp.statusCode()}")
+                // WARN (not DEBUG): this is the *reason* the model picker
+                // is empty and stays empty. An operator reading idea.log
+                // should be able to see it without raising log levels.
+                lastError = "HTTP ${resp.statusCode()} from dashboard root"
+                log.warn("Token fetch: dashboard returned HTTP ${resp.statusCode()}")
                 return null
             }
-            extractTokenFromHtml(resp.body())
+            val token = extractTokenFromHtml(resp.body())
+            if (token == null) {
+                lastError = "Dashboard HTML missing __HERMES_SESSION_TOKEN__"
+                log.warn("Token fetch: ${lastError}")
+                return null
+            }
+            lastError = null
+            token
         } catch (t: Throwable) {
             // Connect refused, timeout, malformed URI — all mean "no token
             // available right now". The dashboard is probably not running.
-            log.debug("Token fetch failed: ${t.message}")
+            lastError = "${t.javaClass.simpleName}: ${t.message ?: "(no message)"}"
+            log.warn("Token fetch failed: ${lastError}")
             null
         }
     }

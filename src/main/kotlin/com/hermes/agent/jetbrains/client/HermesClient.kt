@@ -133,6 +133,33 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
     fun hasAutoToken(): Boolean = autoToken != null
 
     /**
+     * Last error message from [ensureToken], or null if no attempt has
+     * been made yet / the last attempt succeeded. Surfaces why the
+     * model picker is empty so the UI can show a meaningful message
+     * + a "Retry" button instead of a silent "(loading…)" that never
+     * updates. See [retryTokenFetch] for the user-facing escape hatch.
+     */
+    fun lastTokenError(): String? = tokenFetcher.lastError
+
+    /**
+     * Clear the latch + cached error and try to fetch the token again
+     * immediately. Safe to call from the EDT (synchronous shell that
+     * blocks the caller on the network call, but the token fetch
+     * has a 2s timeout so worst case 2s of UI freeze — acceptable
+     * for an explicit user action).
+     *
+     * Returns true if a token is now available.
+     */
+    fun retryTokenFetch(): Boolean {
+        autoToken = null
+        autoTokenAttempted = false
+        // lastError is reset by the next fetchToken() call regardless
+        // of outcome (we set it to null on success, to the new error
+        // string on failure).
+        return ensureToken()
+    }
+
+    /**
      * Make sure we have a session token cached. Safe to call repeatedly:
      * if the user has manually set a token in settings, this is a no-op.
      * If we've already auto-fetched, this is a no-op. Otherwise it scrapes

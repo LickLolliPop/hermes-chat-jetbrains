@@ -13,12 +13,23 @@ All notable changes to Hermes Chat for JetBrains IDEs.
   in flight; on success, the JCEF browser reloads `/chat` and the
   status probe runs immediately. Notifications are shown for both
   success and failure paths.
+- Visible error + manual Retry button for the dashboard token fetch.
+  When the auto-token fetch fails, the footer model label switches to
+  `Model: ✗ {error message}` in red and a "↻ Retry" button appears next
+  to the existing "Open in browser" button. Clicking Retry clears the
+  autoToken latch in HermesClient and re-runs the fetch + status probe
+  immediately. The previous behavior was a silent "Model: (loading…)"
+  that never updated after the first failed fetch.
 
 ### Changed
 - Toolwindow header restructured from a single `JBLabel` to a
   `JPanel(BorderLayout)` containing the status label (left/center) and
   the new restart button (right). Click-to-open-in-browser on the
   status label is preserved unchanged.
+- `DashboardTokenFetcher.fetchToken` now records the last error message
+  in a `lastError` field (exposed via `HermesClient.lastTokenError()`)
+  and logs at WARN (was DEBUG). The DEBUG-level message was invisible
+  by default and made "Model: (loading…)" failures undebuggable.
 
 ## [0.1.0] — 2026-06-28
 
