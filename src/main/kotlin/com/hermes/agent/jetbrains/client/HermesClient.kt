@@ -26,7 +26,11 @@ import java.util.concurrent.atomic.AtomicReference
  * and posts results back via [thenOnPool] (an ExecutorService that
  * marshals back to the EDT for UI updates).
  */
-@Service
+@State(
+    name = "HermesChatClient",
+    storages = [Storage("hermes-chat.xml")],
+)
+@Service(Service.Level.APP)
 class HermesClient : PersistentStateComponent<HermesClient.State> {
 
     data class State(
