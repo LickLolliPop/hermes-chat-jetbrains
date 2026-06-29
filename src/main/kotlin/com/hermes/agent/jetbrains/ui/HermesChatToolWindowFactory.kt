@@ -294,7 +294,7 @@ class HermesChatPanel(private val project: Project) {
         val endpoint = client.getState().endpoint.trim().ifEmpty { "http://127.0.0.1:9119" }
         // The dashboard exposes its chat surface at /chat. We pass the
         // session token via URL fragment so it never lands in HTTP logs.
-        val token = client.getState().sessionToken
+        val token = client.resolveToken() ?: ""
         return if (token.isBlank()) "$endpoint/chat"
         else "$endpoint/chat#token=$token"
     }
@@ -311,9 +311,17 @@ class HermesChatPanel(private val project: Project) {
  * Footer toolbar — current model display (read-only) + open-in-browser shortcut.
  * Model selection is handled by the embedded dashboard SPA; the IDE shell only
  * reflects the currently-active model.
+ *
+ * Stability note: refreshStatus() ticks every 8s. Transient failures of
+ * /api/model/options (auth retry, blank currentModelId, empty list) used to
+ * overwrite a previously-known good label with "—", causing the footer to
+ * flicker between "Model: MiniMax-M3" and "Model: —". The footer now keeps
+ * the last non-empty label it successfully received; transient null/blank
+ * inputs are no-ops. Initial state is "Model: (loading…)" so the user can
+ * distinguish "haven't heard back yet" from "explicitly no model".
  */
 private class FooterPanel {
-    private val modelLabel = JBLabel("Model: —").apply {
+    private val modelLabel = JBLabel("Model: (loading…)").apply {
         foreground = UIUtil.getInactiveTextColor() // gray / disabled look
         border = JBUI.Borders.emptyLeft(8)
     }
@@ -335,12 +343,19 @@ private class FooterPanel {
     val component: JComponent get() = panel
 
     /**
-     * Updates the displayed current model. Called from refreshStatus()
-     * when the dashboard returns a new currentModelId.
+     * Updates the displayed current model.
+     *
+     * @param modelLabelText  The human-readable model label from the dashboard,
+     *                        or null/blank when this tick's fetch was unsuccessful
+     *                        (transient 401, empty list, missing currentModelId).
+     *                        Null/blank inputs are ignored once we have a known-good
+     *                        label, so a single failed tick can't blank out the UI.
      */
     fun setCurrentModel(modelLabelText: String?) {
+        // Drop null/blank — preserve last known-good label.
+        val resolved = modelLabelText?.takeIf { it.isNotBlank() } ?: return
         ApplicationManager.getApplication().invokeLater {
-            modelLabel.text = "Model: ${modelLabelText ?: "—"}"
+            modelLabel.text = "Model: $resolved"
         }
     }
 }

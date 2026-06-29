@@ -63,21 +63,9 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
     private fun currentState(): State = stateRef.get()
 
     /**
-     * Returns the token to use for the next request.
-     *
-     * Priority:
-     *   1. User-configured session token in settings (always wins —
-     *      this is the "I know what I'm doing" escape hatch for users
-     *      who run the dashboard with `HERMES_DASHBOARD_SESSION_TOKEN=...`
-     *      env var and want a stable value).
-     *   2. Auto-fetched token from the dashboard's index.html (cached
-     *      after the first successful fetch — the token is stable for
-     *      the lifetime of the dashboard process).
-     *   3. Null → no header sent. The user sees auth errors and can
-     *      either wait for the auto-fetch on the next probe or paste
-     *      a token manually.
+     * Returns the token to use for the next request or JCEF URL.
      */
-    private fun resolveToken(): String? {
+    fun resolveToken(): String? {
         val manual = currentState().sessionToken.takeIf { it.isNotBlank() }
         if (manual != null) return manual
         return autoToken

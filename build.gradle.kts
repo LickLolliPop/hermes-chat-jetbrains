@@ -28,12 +28,12 @@ dependencies {
     // directory (the one that contains `bin/`, `lib/`, `plugins/`). The
     // AS installer produces exactly that layout.
     intellijPlatform {
-        // Panda 4 is based on IntelliJ 2025.3 (build 253.x). Matches
-        // plugin.xml's since/until-build range below.
-        local("D:/work/android/AndroidStudioPanda4")
-        // Bundled JCEF — required by HermesChatToolWindowFactory.kt's
-        // JBCefBrowserBuilder. AS already ships JCEF, so this dependency
-        // is satisfied out of the box.
+        // 使用标准版 IntelliJ 作为开发环境，它自带完整的 JCEF 支持
+        intellijIdeaCommunity("2024.2.4")
+        
+        // 如果您确实需要连接到本地 AS 调试，请确保该 AS 的 jbr/bin 目录下有 cef_server.exe
+        // local("D:/work/android/AndroidStudioPanda4")
+
         bundledPlugin("com.intellij.java")
         testFramework(TestFrameworkType.Platform)
     }
