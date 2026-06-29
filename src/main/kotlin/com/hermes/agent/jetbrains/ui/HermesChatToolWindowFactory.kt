@@ -48,7 +48,7 @@ import javax.swing.SwingConstants
  *   │                                              │
  *   │                                              │
  *   ├──────────────────────────────────────────────┤
- *   │ Model: [claude-opus-4 ▼]  [Open in browser]  │   ← footer toolbar
+ *   │ Model: claude-opus-4              [Open...]  │   ← footer toolbar (read-only)
  *   └──────────────────────────────────────────────┘
  * ```
  *
@@ -60,6 +60,10 @@ import javax.swing.SwingConstants
  *   behind the dashboard.
  * - The IDE shell only owns navigation, settings, and (future) IDE-context
  *   bridges — all the heavy lifting lives in the dashboard.
+ *
+ * Model selection is handled by the embedded dashboard SPA (its own model &
+ * tools dropdowns). The IDE footer only reflects the currently-active model
+ * as a read-only label — no dropdown, no POST /api/model/set from the IDE.
  *
  * Fallback path: if JCEF isn't available (some Android Studio builds
  * disable it, or the JBR is missing the cef binaries), we render a static
@@ -104,6 +108,7 @@ class HermesChatPanel(private val project: Project) {
     // The browser is created lazily because JCEF requires the IDE-level
     // CefApp to be initialized, which happens on first request.
     private var browser: CefBrowser? = null
+    private var isFallbackAdded = false
     private val browserHost = JBPanel<JBPanel<*>>(BorderLayout()).apply {
         background = JBColor.PanelBackground
         border = BorderFactory.createMatteBorder(1, 0, 1, 0, JBColor.border())
@@ -118,11 +123,8 @@ class HermesChatPanel(private val project: Project) {
 
     init {
         footer.onOpenInBrowser = { openInExternalBrowser() }
-        footer.onModelSelected = { id ->
-            ApplicationManager.getApplication().executeOnPooledThread {
-                client.setActiveModel(id)
-            }
-        }
+        // Model selection is handled by the embedded dashboard SPA.
+        // The IDE footer only reflects the current model (read-only).
 
         // First paint: kick off the async status probe. We *don't* await
         // here — the IDE shell should be visible immediately even if the
@@ -180,7 +182,10 @@ class HermesChatPanel(private val project: Project) {
                                 "refreshStatus: fetchModels returned ${modelList.options.size} models " +
                                     "(currentModelId=${modelList.currentModelId})"
                             )
-                            footer.setModels(modelList.options, modelList.currentModelId)
+                            // Footer is now read-only — just reflect the current model
+                            val currentLabel = modelList.options
+                                .firstOrNull { it.id == modelList.currentModelId }?.label
+                            footer.setCurrentModel(currentLabel)
                         }
                     } else {
                         log.info("refreshStatus: reachable but no token yet — deferring model fetch to next tick")
@@ -224,23 +229,16 @@ class HermesChatPanel(private val project: Project) {
         }
 
         if (!isSupported) {
-            // JCEF is unavailable in this runtime. Common causes in a
-            // `./gradlew runIde` sandbox:
-            //   - the JBR shipped with the target IDE doesn't include
-            //     the Cef native binaries
-            //   - the sandbox was launched without the
-            //     `ide.supported.feature.jcef=true` system property
-            //   - a previous JCEF instance in the same JVM died and
-            //     poisoned the registry
-            // The fallback "Open in browser" link below is the right UX
-            // for all three: the user can still get to /chat.
-            log.warn(
-                "JCEF not supported by the IDE runtime, falling back to 'Open in browser' link. " +
-                "If you're running inside `./gradlew runIde`, this usually means the sandbox " +
-                "JBR is missing the Cef native binaries. Real Android Studio installs are unaffected."
-            )
-            browserHost.add(buildFallbackLink(), BorderLayout.CENTER)
-            browserHost.revalidate()
+            if (!isFallbackAdded) {
+                log.warn(
+                    "JCEF not supported by the IDE runtime, falling back to 'Open in browser' link. " +
+                            "If you're running inside `./gradlew runIde`, this usually means the sandbox " +
+                            "JBR is missing the Cef native binaries. Real Android Studio installs are unaffected."
+                )
+                browserHost.add(buildFallbackLink(), BorderLayout.CENTER)
+                browserHost.revalidate()
+                isFallbackAdded = true
+            }
             return
         }
 
@@ -262,6 +260,10 @@ class HermesChatPanel(private val project: Project) {
                     failedUrl: String
                 ) {
                     log.warn("Hermes chat page failed to load: $errorText (url=$failedUrl, code=$errorCode)")
+                    ApplicationManager.getApplication().invokeLater {
+                        header.text = "  Load Error: $errorText ($errorCode)"
+                        header.foreground = JBColor.RED
+                    }
                 }
             }, jbBrowser.cefBrowser)
 
@@ -306,13 +308,14 @@ class HermesChatPanel(private val project: Project) {
 }
 
 /**
- * Footer toolbar — model picker + open-in-browser shortcut.
+ * Footer toolbar — current model display (read-only) + open-in-browser shortcut.
+ * Model selection is handled by the embedded dashboard SPA; the IDE shell only
+ * reflects the currently-active model.
  */
 private class FooterPanel {
-    private val modelPicker = com.intellij.openapi.ui.ComboBox<String>().apply {
-        isEditable = false
-        // Default placeholder; replaced when /api/model/options responds.
-        addItem("(no models yet)")
+    private val modelLabel = JBLabel("Model: —").apply {
+        foreground = UIUtil.getInactiveTextColor() // gray / disabled look
+        border = JBUI.Borders.emptyLeft(8)
     }
     private val openBrowserBtn = JButton("Open in browser").apply {
         addActionListener { onOpenInBrowser?.invoke() }
@@ -320,68 +323,25 @@ private class FooterPanel {
     private val panel = JBPanel<JBPanel<*>>().apply {
         layout = BorderLayout()
         border = JBUI.Borders.empty(4, 8)
-        val left = JBLabel("Model: ").apply {
-            displayedMnemonicIndex = 0 // 'M' in "Model: "
-            labelFor = modelPicker
-        }
         val leftWrap = JBPanel<JBPanel<*>>(BorderLayout()).apply {
-            add(left, BorderLayout.WEST)
-            add(modelPicker, BorderLayout.CENTER)
+            add(modelLabel, BorderLayout.CENTER)
         }
         add(leftWrap, BorderLayout.CENTER)
         add(openBrowserBtn, BorderLayout.EAST)
     }
 
     var onOpenInBrowser: (() -> Unit)? = null
-    var onModelSelected: ((String) -> Unit)? = null
-
-    init {
-        modelPicker.addActionListener {
-            val selected = modelPicker.selectedItem as? String ?: return@addActionListener
-            // The combo stores "label (id)" so the action handler can pick
-            // the id back out from the bracket position.
-            val id = extractIdFromLabel(selected) ?: selected
-            onModelSelected?.invoke(id)
-        }
-    }
 
     val component: JComponent get() = panel
 
-    fun setModels(
-        models: List<com.hermes.agent.jetbrains.model.HermesModelOption>,
-        currentModelId: String? = null,
-    ) {
-        // Always reset the dropdown so we don't leave a stale
-        // "(no models yet)" placeholder when an empty list comes back
-        // from the dashboard (e.g. provider not configured).
-        modelPicker.removeAllItems()
-        if (models.isEmpty()) {
-            modelPicker.addItem("(no models available)")
-            modelPicker.isEnabled = false
-            return
+    /**
+     * Updates the displayed current model. Called from refreshStatus()
+     * when the dashboard returns a new currentModelId.
+     */
+    fun setCurrentModel(modelLabelText: String?) {
+        ApplicationManager.getApplication().invokeLater {
+            modelLabel.text = "Model: ${modelLabelText ?: "—"}"
         }
-        modelPicker.isEnabled = true
-        var selectedIdx = 0
-        for ((idx, m) in models.withIndex()) {
-            // We display "label (id)" so the picker shows a human-readable
-            // name but the action listener still receives the real model id.
-            modelPicker.addItem("${m.label} (${m.id})")
-            // Pre-select the dashboard's currently-active model so the
-            // user lands on whatever is actually running, not whatever
-            // happened to sort first in the providers[] array. If no
-            // match is found the picker defaults to index 0.
-            if (currentModelId != null && m.id == currentModelId) {
-                selectedIdx = idx
-            }
-        }
-        modelPicker.selectedIndex = selectedIdx
-    }
-
-    private fun extractIdFromLabel(label: String): String? {
-        val open = label.lastIndexOf('(')
-        val close = label.lastIndexOf(')')
-        if (open < 0 || close <= open) return null
-        return label.substring(open + 1, close)
     }
 }
 
