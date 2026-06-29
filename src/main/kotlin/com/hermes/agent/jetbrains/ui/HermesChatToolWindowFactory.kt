@@ -4,10 +4,12 @@ import com.hermes.agent.jetbrains.client.HermesClient
 import com.hermes.agent.jetbrains.dashboard.DashboardProcessManager
 import com.hermes.agent.jetbrains.model.HermesStatus
 import com.intellij.notification.NotificationType
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -31,6 +33,7 @@ import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.util.concurrent.atomic.AtomicLong
 import javax.swing.BorderFactory
 import javax.swing.Box
 import javax.swing.BoxLayout
@@ -38,6 +41,8 @@ import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.SwingConstants
+import javax.swing.Timer
+import javax.swing.event.HyperlinkListener
 
 /**
  * VSCode-Chat-style tool window.
@@ -77,6 +82,13 @@ class HermesChatToolWindowFactory : ToolWindowFactory {
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = HermesChatPanel(project)
+        // Bind the panel's lifecycle to the project: when the project closes,
+        // the Disposer tree calls panel.dispose() automatically. We can't
+        // register inside HermesChatPanel.init because at that point the
+        // project isn't necessarily still alive, and registering there with
+        // a lambda overload causes a Kotlin "too many arguments" compile
+        // error (Disposer.register takes exactly 2 Disposables, not 3).
+        Disposer.register(project, panel)
         // The ContentManager is the only thing ToolWindowFactory requires
         // us to populate. Setting a preferred size keeps the toolwindow
         // from collapsing to a 30px-wide sliver on first open.
@@ -97,7 +109,7 @@ class HermesChatToolWindowFactory : ToolWindowFactory {
  * invariants (status bar height, footer height, JCEF weight=1.0) stay
  * co-located with the JComponent construction.
  */
-class HermesChatPanel(private val project: Project) {
+class HermesChatPanel(private val project: Project) : Disposable {
 
     private val client: HermesClient = HermesClient.getInstance()
     private val log = logger<HermesChatPanel>()
@@ -145,7 +157,32 @@ class HermesChatPanel(private val project: Project) {
         preferredSize = Dimension(420, 600)
     }
 
+    // Persistent listeners — created ONCE, not every timer tick.
+    // See BUG-2026-06-29-HermesChat-Listener-Leak.md: adding a new
+    // anonymous MouseAdapter inside renderStatus() accumulated ~1500
+    // listeners over a few hours of idle dashboard uptime, and a single
+    // mouse hover then fired ~1500 BrowserUtil.browse() calls → browser
+    // storm + system freeze. Always keep listeners in fields.
+    private val headerMouseListener = object : MouseAdapter() {
+        override fun mouseClicked(e: MouseEvent?) {
+            openInExternalBrowser()
+        }
+    }
+
+    private val fallbackLinkListener = HyperlinkListener {
+        openInExternalBrowser()
+    }
+
+    // 500 ms debounce as a safety net: if a listener ever leaks again
+    // (regression or new code), repeated clicks within half a second
+    // are silently dropped instead of spawning 1000+ browser processes.
+    private val openBrowserDebounceMs = 500L
+    private val lastOpenBrowserAt = AtomicLong(0L)
+
+    private var statusTimer: Timer? = null
+
     init {
+        header.addMouseListener(headerMouseListener)
         footer.onOpenInBrowser = { openInExternalBrowser() }
         // Retry handler: invoked when the user clicks the "↻ Retry" button
         // that appears next to the model label when the dashboard token
@@ -162,10 +199,15 @@ class HermesChatPanel(private val project: Project) {
         // dashboard is down.
         refreshStatus()
         // Probe every 8s. Cheap (HEAD-style), keeps the green/grey dot honest.
-        val timer = javax.swing.Timer(8_000, { refreshStatus() })
-        timer.start()
-        // Hold the timer on the panel so it survives reparenting.
-        root.putClientProperty("hermes-chat.timer", timer)
+        // The timer is held on the field (not just the panel) so dispose()
+        // can stop it on toolwindow teardown. Lifecycle wiring
+        // (Disposer.register(project, panel)) happens in
+        // HermesChatToolWindowFactory.createToolWindowContent — not here,
+        // because Disposer.register takes exactly 2 Disposables and cannot
+        // be called with a 3rd "on dispose" lambda.
+        statusTimer = Timer(8_000) { refreshStatus() }.apply {
+            start()
+        }
     }
 
     val component: JComponent get() = root
@@ -246,11 +288,6 @@ class HermesChatPanel(private val project: Project) {
         header.text = "  Hermes $version — connected"
         header.foreground = JBColor(Color(0x2E7D32), Color(0x81C784))
         header.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-        header.addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent?) {
-                openInExternalBrowser()
-            }
-        })
     }
 
     private fun renderUnreachable() {
@@ -314,14 +351,20 @@ class HermesChatPanel(private val project: Project) {
             browser = jbBrowser.cefBrowser
         } catch (t: Throwable) {
             log.warn("JBCefBrowserBuilder.build() threw, falling back to 'Open in browser' link", t)
-            browserHost.add(buildFallbackLink(), BorderLayout.CENTER)
-            browserHost.revalidate()
+            if (!isFallbackAdded) {
+                browserHost.add(buildFallbackLink(), BorderLayout.CENTER)
+                browserHost.revalidate()
+                isFallbackAdded = true
+            }
         }
     }
 
     private fun buildFallbackLink(): JComponent {
         val link = com.intellij.ui.HyperlinkLabel("Open Hermes Chat in your browser")
-        link.addHyperlinkListener { openInExternalBrowser() }
+        // Use the persistent field listener — never add an anonymous one
+        // here. (Even though isFallbackAdded guards re-creation today, the
+        // anonymous listener pattern is the original bug we want to avoid.)
+        link.addHyperlinkListener(fallbackLinkListener)
         val wrap = JBPanel<JBPanel<*>>(GridBagLayout())
         val gbc = GridBagConstraints().apply {
             anchor = GridBagConstraints.CENTER
@@ -340,10 +383,41 @@ class HermesChatPanel(private val project: Project) {
     }
 
     private fun openInExternalBrowser() {
+        // AtomicLong.compareAndSet gives us lock-free debounce that is also
+        // safe under concurrent mouse events. @Volatile long would be enough
+        // on 64-bit JBR, but CAS is portable to any future JVM target and
+        // costs nothing on modern CPUs.
+        val now = System.currentTimeMillis()
+        val last = lastOpenBrowserAt.get()
+        if (now - last < openBrowserDebounceMs) {
+            log.info("openInExternalBrowser: debounced (${now - last}ms < ${openBrowserDebounceMs}ms)")
+            return
+        }
+        if (!lastOpenBrowserAt.compareAndSet(last, now)) {
+            // Another thread just won the CAS race; treat as debounced.
+            log.info("openInExternalBrowser: debounced (CAS contention)")
+            return
+        }
+
         val url = chatUrl()
         ApplicationManager.getApplication().executeOnPooledThread {
             BrowserUtil.browse(url)
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Lifecycle: called automatically by the IntelliJ Disposer tree when
+    // the registered parent (the project, in createToolWindowContent)
+    // is disposed. Stops the timer and detaches listeners so a long-lived
+    // IDE session can't accumulate them across tool-window hide/show cycles.
+    override fun dispose() {
+        statusTimer?.stop()
+        statusTimer = null
+        header.removeMouseListener(headerMouseListener)
+        // isFallbackAdded is intentionally NOT reset — the link might be
+        // re-attached later by a refresh, but it already has the (now
+        // persistent) listener, so no re-attach is needed.
+        log.info("HermesChatPanel: disposed (timer stopped, listeners detached)")
     }
 
     // ------------------------------------------------------------------
