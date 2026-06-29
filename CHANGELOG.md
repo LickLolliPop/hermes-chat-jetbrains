@@ -4,6 +4,22 @@ All notable changes to Hermes Chat for JetBrains IDEs.
 
 ## [Unreleased]
 
+### Added
+- ↻ Restart button in the toolwindow header (right side of the status row).
+  Restarts the WSL-hosted Hermes dashboard in place: stops the running
+  process, polls for port 9119 to free, then re-launches with
+  `--skip-build` if `web_dist/index.html` exists, otherwise a full build.
+  Status label swaps to "Restarting dashboard…" while the restart is
+  in flight; on success, the JCEF browser reloads `/chat` and the
+  status probe runs immediately. Notifications are shown for both
+  success and failure paths.
+
+### Changed
+- Toolwindow header restructured from a single `JBLabel` to a
+  `JPanel(BorderLayout)` containing the status label (left/center) and
+  the new restart button (right). Click-to-open-in-browser on the
+  status label is preserved unchanged.
+
 ## [0.1.0] — 2026-06-28
 
 ### Added

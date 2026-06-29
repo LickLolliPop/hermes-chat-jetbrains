@@ -1,7 +1,9 @@
 package com.hermes.agent.jetbrains.ui
 
 import com.hermes.agent.jetbrains.client.HermesClient
+import com.hermes.agent.jetbrains.dashboard.DashboardProcessManager
 import com.hermes.agent.jetbrains.model.HermesStatus
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -105,6 +107,26 @@ class HermesChatPanel(private val project: Project) {
     }
     private val footer = FooterPanel()
 
+    // Refresh button — sits in the header row, opposite the status label.
+    // Restarts the WSL-hosted dashboard process. The button is disabled
+    // and the label swaps to "Restarting…" while the restart is in flight,
+    // so the user can't double-click and pile up concurrent wsl.exe calls.
+    private val refreshButton = JButton("↻").apply {
+        toolTipText = "Restart Hermes dashboard in WSL"
+        isFocusable = false
+        margin = JBUI.insets(2, 6)
+        addActionListener { onRestartClicked() }
+    }
+    // Header row: [icon + status label | refresh button]. Wrapped in a
+    // JPanel because BorderLayout needs a container to split horizontally.
+    // The label keeps its addMouseListener handler for "click to open in
+    // browser" — that behaviour is unchanged.
+    private val headerRow: JPanel = JBPanel<JBPanel<*>>(BorderLayout()).apply {
+        border = JBUI.Borders.empty(2, 8)
+        add(header, BorderLayout.CENTER)
+        add(refreshButton, BorderLayout.EAST)
+    }
+
     // The browser is created lazily because JCEF requires the IDE-level
     // CefApp to be initialized, which happens on first request.
     private var browser: CefBrowser? = null
@@ -115,7 +137,7 @@ class HermesChatPanel(private val project: Project) {
     }
 
     private val root: JPanel = JBPanel<JBPanel<*>>(BorderLayout()).apply {
-        add(header, BorderLayout.NORTH)
+        add(headerRow, BorderLayout.NORTH)
         add(browserHost, BorderLayout.CENTER)
         add(footer.component, BorderLayout.SOUTH)
         preferredSize = Dimension(420, 600)
@@ -303,6 +325,41 @@ class HermesChatPanel(private val project: Project) {
         val url = chatUrl()
         ApplicationManager.getApplication().executeOnPooledThread {
             BrowserUtil.browse(url)
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Restart button handler
+
+    /**
+     * Fires the dashboard restart. Disables the button + swaps the
+     * status label to "Restarting…" so the user gets immediate feedback.
+     * The actual work happens in [DashboardProcessManager] off the EDT.
+     */
+    private fun onRestartClicked() {
+        if (!refreshButton.isEnabled) return  // already in flight
+        refreshButton.isEnabled = false
+        header.text = "  Restarting dashboard…"
+        log.info("HermesChatPanel: user clicked ↻ — restarting dashboard")
+
+        DashboardProcessManager().restartDashboard { result ->
+            refreshButton.isEnabled = true
+            if (result.success) {
+                // Trigger an immediate status probe so the green/grey
+                // dot updates without waiting for the 8s timer. The
+                // /api/status hit will succeed now that the port is up.
+                refreshStatus()
+                // JCEF is also reloaded so the embedded chat page picks
+                // up any dashboard-side state changes (new session, etc).
+                browser?.loadURL(chatUrl())
+                DashboardProcessManager.notify(result.message, NotificationType.INFORMATION)
+            } else {
+                // Don't clobber the "Hermes dashboard unreachable" state —
+                // the user will see that on the next 8s tick. We just
+                // surface what went wrong in a balloon.
+                log.warn("HermesChatPanel: restart failed: ${result.message}")
+                DashboardProcessManager.notify("Restart failed: ${result.message}", NotificationType.ERROR)
+            }
         }
     }
 }
