@@ -88,6 +88,12 @@ logs/
 .intellijPlatform/
 
 # =====================================================
+# Kotlin compiler caches (Kotlin 2.x writes here at compile time;
+# not source code, safe to ignore and re-generatable)
+# =====================================================
+.kotlin/
+
+# =====================================================
 # Commit-message draft files (used by `git commit -F .msg-*.txt`
 # trick to avoid WSL->cmd quoting issues)
 # =====================================================

@@ -18,24 +18,23 @@ repositories {
 }
 
 dependencies {
-    // IntelliJ Platform — targeting IntelliJ 2024.2 (which is the base of
-    // Android Studio Koala/Ladybug and newer). 2025.2 also accepted because
-    // we don't use APIs that moved.
+    // IntelliJ Platform — target the *Android Studio* distribution instead
+    // of IntelliJ IDEA Community because AS ships JCEF + Android-specific
+    // APIs out of the box. We point at the local install via localPath so
+    // `./gradlew runIde` doesn't have to re-download ~1GB of AS just to
+    // boot a sandbox.
+    //
+    // Note: localPath must be an existing IntelliJ Platform installation
+    // directory (the one that contains `bin/`, `lib/`, `plugins/`). The
+    // AS installer produces exactly that layout.
     intellijPlatform {
-        intellijIdeaCommunity("2024.2.6")
-        // Bundled JCEF is what powers VSCode-Chat-style markdown rendering.
-        // Android Studio ships JCEF too, so this works there. Listing it
-        // here does two things:
-        //   1. compileClasspath picks up org.cef.* / com.intellij.ui.jcef.*
-        //      so HermesChatToolWindowFactory.kt can import them
-        //   2. `./gradlew runIde` sandboxes include the JCEF plugin jar
-        //      automatically — without this, the sandbox IDE rejects
-        //      our plugin with "requires 'com.intellij.ui.jcef'".
-        // End users on Android Studio don't see a difference: AS has JCEF
-        // bundled, so the dependency is satisfied out of the box.
+        // Panda 4 is based on IntelliJ 2025.3 (build 253.x). Matches
+        // plugin.xml's since/until-build range below.
+        local("D:/work/android/AndroidStudioPanda4")
+        // Bundled JCEF — required by HermesChatToolWindowFactory.kt's
+        // JBCefBrowserBuilder. AS already ships JCEF, so this dependency
+        // is satisfied out of the box.
         bundledPlugin("com.intellij.java")
-        bundledPlugin("org.intellij.intelliLang")
-        bundledPlugin("com.intellij.ui.jcef")
         testFramework(TestFrameworkType.Platform)
     }
 
