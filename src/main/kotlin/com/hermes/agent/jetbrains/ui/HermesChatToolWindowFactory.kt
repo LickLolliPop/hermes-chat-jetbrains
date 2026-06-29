@@ -144,22 +144,28 @@ class HermesChatPanel(private val project: Project) {
             // Make sure we have a session token before any authenticated
             // call. The first probe gets a chance to scrape the index.html;
             // subsequent probes short-circuit (see HermesClient.ensureToken).
+            log.info("refreshStatus: tick (autoToken=${client.hasAutoToken()}, endpoint=${client.getState().endpoint})")
             client.ensureToken()
             val reachable = client.isReachable()
+            log.info("refreshStatus: isReachable=$reachable")
             ApplicationManager.getApplication().invokeLater {
                 if (reachable) {
+                    log.info("refreshStatus: reachable, kicking off fetchStatus/fetchModels")
                     // Fetch full status for the version string once we're
                     // sure the dashboard is up.
                     client.fetchStatusAsync { status ->
+                        log.info("refreshStatus: fetchStatus returned version=${status?.version}")
                         renderStatus(status)
                     }
                     client.fetchModelsAsync { models ->
+                        log.info("refreshStatus: fetchModels returned ${models.size} models")
                         footer.setModels(models)
                     }
                     // If the browser hasn't been initialized yet, do it now —
                     // we know the dashboard is up so loading /chat will work.
                     ensureBrowser()
                 } else {
+                    log.info("refreshStatus: UNREACHABLE — skipping model fetch")
                     renderUnreachable()
                 }
             }

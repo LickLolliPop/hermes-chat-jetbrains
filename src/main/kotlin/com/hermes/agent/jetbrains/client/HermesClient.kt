@@ -138,6 +138,13 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
     fun testConnection(): HermesStatus? = restClient.getStatus()
 
     /**
+     * Returns true if an auto-fetched token is currently cached. Useful
+     * for the UI's debug log line so we can see whether the token made
+     * it from index.html to the HTTP layer on the first probe.
+     */
+    fun hasAutoToken(): Boolean = autoToken != null
+
+    /**
      * Make sure we have a session token cached. Safe to call repeatedly:
      * if the user has manually set a token in settings, this is a no-op.
      * If we've already auto-fetched, this is a no-op. Otherwise it scrapes
