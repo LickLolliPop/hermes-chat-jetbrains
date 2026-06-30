@@ -46,13 +46,14 @@ class HermesRestClient(
     fun getOrNull(path: String, retryOnAuth: Boolean = false): String? {
         val first = sendGet(path) ?: return null
         if (first.statusCode() in 200..299) return first.body()
-        if (first.statusCode() == 401 && retryOnAuth) {
-            // Token rotated (dashboard restart, etc.). Invalidate and retry
-            // once with the freshly-scraped token.
+        if (first.statusCode() == 401) {
+            // Token rotated (dashboard restart, etc.). Invalidate so the next
+            // call (or the retry below) uses a fresh token.
             onAuthFailure?.invoke()
-            val second = sendGet(path) ?: return null
-            if (second.statusCode() in 200..299) return second.body()
-            return null
+            if (retryOnAuth) {
+                val second = sendGet(path) ?: return null
+                if (second.statusCode() in 200..299) return second.body()
+            }
         }
         return null
     }
@@ -69,8 +70,10 @@ class HermesRestClient(
     }
 
     fun getStatus(): HermesStatus? {
-        // /api/status is in PUBLIC_API_PATHS — never 401s. No retry.
-        val body = getOrNull("/api/status") ?: return null
+        // /api/status is in PUBLIC_API_PATHS — never 401s on the OAuth-gated
+        // dashboard, but the legacy loopback-bind dashboard still requires
+        // the session token for it. We retry once on 401.
+        val body = getOrNull("/api/status", retryOnAuth = true) ?: return null
         return parseStatus(body)
     }
 

@@ -58,13 +58,37 @@ class HermesChatPanelBrowserRecreateTest : BasePlatformTestCase() {
     }
 
     @Test
-    fun testEnsureBrowserForceFalseIsNoOpWhenNothingAttached() {
+    fun testEnsureBrowserForceFalseOnEmptyHostAddsFallbackLikeForceTrue() {
         val panel = HermesChatPanel(project)
-        // force=false on empty host should be a no-op — the original
-        // "skip if browser != null" semantics, but applied to a clean
-        // empty host.
+        // force=false on a CLEAN empty host is NOT a no-op — the early-return
+        // guard `!force && (browser != null || isFallbackAdded)` only fires
+        // when something is already attached. With an empty host, force=false
+        // takes the same path as force=true: JBCefApp.isSupported() returns
+        // false under the headless fixture, so the fallback hyperlink is
+        // added. This mirrors testEnsureBrowserForceRebuildsHostAfterDispose.
         panel.ensureBrowserForTest(force = false)
-        assertEquals(0, panel.browserHostChildCount())
+        assertEquals(
+            "ensureBrowser(force=false) on empty host should add fallback link",
+            1, panel.browserHostChildCount(),
+        )
+    }
+
+    @Test
+    fun testEnsureBrowserForceFalseIsNoOpWhenFallbackAlreadyAdded() {
+        val panel = HermesChatPanel(project)
+        // Now prime the host with a fallback (same as the new test above).
+        panel.ensureBrowserForTest(force = true)
+        assertEquals(1, panel.browserHostChildCount())
+
+        // Subsequent force=false MUST short-circuit via the early-return
+        // guard (`browser == null || isFallbackAdded`). Pin that contract —
+        // if the guard ever drifts, calling refreshStatus() repeatedly
+        // would stack fallback links into the host.
+        panel.ensureBrowserForTest(force = false)
+        assertEquals(
+            "ensureBrowser(force=false) must not add a second fallback",
+            1, panel.browserHostChildCount(),
+        )
     }
 
     @Test

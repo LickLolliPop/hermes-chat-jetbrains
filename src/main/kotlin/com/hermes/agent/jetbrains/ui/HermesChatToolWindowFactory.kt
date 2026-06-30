@@ -140,8 +140,10 @@ class HermesChatPanel(private val project: Project) : Disposable {
         footer.onOpenInBrowser = { openInExternalBrowser() }
         footer.onRetryTokenFetch = { onRetryTokenClicked() }
         
-        refreshStatus()
-        statusTimer?.start()
+        if (!ApplicationManager.getApplication().isUnitTestMode) {
+            refreshStatus()
+            statusTimer?.start()
+        }
     }
 
     companion object {
@@ -254,7 +256,7 @@ class HermesChatPanel(private val project: Project) : Disposable {
     internal fun ensureBrowserForTest(force: Boolean) = ensureBrowser(force)
 
     private fun ensureBrowser(force: Boolean = false) {
-        if (!force && browser != null) return
+        if (!force && (browser != null || isFallbackAdded)) return
         if (force) disposeBrowser()
         val isSupported = try {
             com.intellij.ui.jcef.JBCefApp.isSupported()
@@ -436,10 +438,17 @@ internal class FooterPanel {
         // the footer when (a) the just-switched model hadn't propagated to
         // the options list yet, or (b) the new id was unlisted.
         val resolved = modelLabelText?.takeIf { it.isNotBlank() } ?: return
-        ApplicationManager.getApplication().invokeLater {
+        val updateTask = Runnable {
             modelLabel.text = "Model: $resolved"
             modelLabel.foreground = UIUtil.getLabelForeground()
             retryButton.isVisible = false
+        }
+
+        val app = ApplicationManager.getApplication()
+        if (app != null && app.isDispatchThread) {
+            updateTask.run()
+        } else {
+            app?.invokeLater(updateTask) ?: updateTask.run()
         }
     }
 
@@ -452,7 +461,7 @@ internal class FooterPanel {
     internal fun currentModelLabelTextForTest(): String = modelLabel.text
 
     fun setTokenError(message: String?) {
-        ApplicationManager.getApplication().invokeLater {
+        val updateTask = Runnable {
             if (message == null) {
                 modelLabel.foreground = UIUtil.getInactiveTextColor()
                 retryButton.isVisible = false
@@ -461,6 +470,13 @@ internal class FooterPanel {
                 modelLabel.foreground = JBColor.RED
                 retryButton.isVisible = true
             }
+        }
+
+        val app = ApplicationManager.getApplication()
+        if (app != null && app.isDispatchThread) {
+            updateTask.run()
+        } else {
+            app?.invokeLater(updateTask) ?: updateTask.run()
         }
     }
 }
