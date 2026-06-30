@@ -23,7 +23,6 @@ import org.cef.browser.CefFrame
 import org.cef.handler.CefLoadHandler
 import org.cef.handler.CefLoadHandlerAdapter
 import java.awt.BorderLayout
-import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.GridBagConstraints
@@ -67,7 +66,8 @@ class HermesChatPanel(private val project: Project) : Disposable {
 
     private val header = JBLabel(" ", SwingConstants.LEFT).apply {
         border = JBUI.Borders.empty(4, 8)
-        foreground = Color.BLACK
+        foreground = UIUtil.getContextHelpForeground()
+        icon = HermesIcons.ToolWindowSmall
     }
 
     internal fun headerForTest(): JBLabel = header
