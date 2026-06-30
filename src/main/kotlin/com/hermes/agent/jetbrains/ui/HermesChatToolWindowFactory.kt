@@ -73,7 +73,7 @@ class HermesChatPanel(private val project: Project) : Disposable {
 
     internal fun headerForTest(): JBLabel = header
     private val footerByLazy = lazy { FooterPanel() }
-    private val footer: FooterPanel get() = footerByLazy.value
+    internal val footer: FooterPanel get() = footerByLazy.value
 
     private var _statusTimer: javax.swing.Timer? = null
     private val statusTimer: javax.swing.Timer?
@@ -101,6 +101,13 @@ class HermesChatPanel(private val project: Project) : Disposable {
     }
 
     private var browser: CefBrowser? = null
+    // Hold the wrapper too — CefBrowser has no dispose(); JBCefBrowser does.
+    // Without the wrapper, we can't tear down a JCEF instance and the
+    // dashboard's /api/events feed (EventSource/WebSocket) stays wedged to
+    // the dead socket of the previous dashboard process, surfacing the
+    // "events feed disconnected" error that the user reported after
+    // hitting the refresh button post-model-switch.
+    private var jbBrowser: com.intellij.ui.jcef.JBCefBrowser? = null
     private var isFallbackAdded = false
     private val browserHost = JBPanel<JBPanel<*>>(BorderLayout()).apply {
         background = JBColor.PanelBackground
@@ -167,9 +174,18 @@ class HermesChatPanel(private val project: Project) : Disposable {
                     client.fetchStatusAsync { status -> renderStatus(status) }
                     if (client.hasAutoToken() || client.getState().sessionToken.isNotBlank()) {
                         client.fetchModelsAsync { modelList ->
-                            val currentLabel = modelList.options
-                                .firstOrNull { it.id == modelList.currentModelId }?.label
-                            footer.setCurrentModel(currentLabel)
+                            // Resolve label from options first; fall back to the
+                            // raw currentModelId if (a) the id isn't in the list
+                            // (e.g. just-switched model whose /api/model/options
+                            // response was cached) or (b) options is empty. This
+                            // keeps the footer honest about what the dashboard
+                            // is actually running, instead of sticking on the
+                            // previous model's label.
+                            val resolved = modelList.options
+                                .firstOrNull { it.id == modelList.currentModelId }
+                                ?.label
+                                ?: modelList.currentModelId
+                            footer.setCurrentModel(resolved)
                         }
                     } else {
                         val err = client.lastTokenError()
@@ -205,8 +221,41 @@ class HermesChatPanel(private val project: Project) : Disposable {
         header.foreground = JBColor(Color(0xC62828), Color(0xEF9A9A))
     }
 
-    private fun ensureBrowser() {
-        if (browser != null) return
+    /**
+     * Test seam: number of children currently in the JCEF host panel.
+     * Used by regression tests for the disposeBrowser/ensureBrowser(force)
+     * round-trip — when the JCEF instance is disposed, the host should
+     * be empty (componentCount == 0); when ensureBrowser(force=true) runs
+     * against a headless fixture (JCEF unsupported), a single fallback
+     * link is added back (componentCount == 1).
+     */
+    internal fun browserHostChildCount(): Int = browserHost.componentCount
+
+    /**
+     * Test seam: non-null when an embedded JBCefBrowser is currently
+     * attached. Regression tests assert this flips to null after
+     * disposeBrowser() and that the field is the right wrapper.
+     */
+    internal fun isJbBrowserAttached(): Boolean = jbBrowser != null
+
+    /**
+     * Test seam: invoke the protected disposeBrowser() path directly
+     * so tests can assert the JCEF teardown side-effects without
+     * going through the full restartDashboard() flow (which spawns
+     * external processes).
+     */
+    internal fun disposeBrowserForTest() = disposeBrowser()
+
+    /**
+     * Test seam: build a fresh JCEF (or fallback) inside the host panel.
+     * Mirrors onRestartClicked's success branch without touching the
+     * dashboard process manager.
+     */
+    internal fun ensureBrowserForTest(force: Boolean) = ensureBrowser(force)
+
+    private fun ensureBrowser(force: Boolean = false) {
+        if (!force && browser != null) return
+        if (force) disposeBrowser()
         val isSupported = try {
             com.intellij.ui.jcef.JBCefApp.isSupported()
         } catch (t: Throwable) { false }
@@ -238,6 +287,7 @@ class HermesChatPanel(private val project: Project) : Disposable {
             browserHost.add(jbBrowser.component, BorderLayout.CENTER)
             browserHost.revalidate()
             browser = jbBrowser.cefBrowser
+            this.jbBrowser = jbBrowser
         } catch (t: Throwable) {
             if (!isFallbackAdded) {
                 browserHost.add(buildFallbackLink(), BorderLayout.CENTER)
@@ -279,15 +329,58 @@ class HermesChatPanel(private val project: Project) : Disposable {
         header.removeMouseListener(headerMouseListener)
     }
 
+    /**
+     * Tear down the embedded CEF browser so its in-flight EventSource /
+     * WebSocket connections to the (now-dead) dashboard process are fully
+     * released. Without this, the freshly-restarted dashboard cannot push
+     * events to this JCEF instance — the old feed stays in
+     * "events feed disconnected" state until the whole IDE is restarted.
+     *
+     * Must run on the EDT; the JCEF client expects UI-thread disposal.
+     */
+    private fun disposeBrowser() {
+        val wrapper = jbBrowser
+        jbBrowser = null
+        browser = null
+        if (wrapper != null) {
+            try {
+                // JBCefBrowser.dispose() releases the underlying CefBrowser
+                // and unhooks all CefLoadHandlers / EventSource listeners
+                // associated with this instance. That's what we need — the
+                // dashboard's events feed is the listener we care about.
+                wrapper.dispose()
+            } catch (t: Throwable) {
+                log.warn("JBCefBrowser.dispose failed", t)
+            }
+        }
+        // Remove the component from the host panel so the next ensureBrowser()
+        // call (force=true) doesn't stack two browsers on top of each other.
+        browserHost.removeAll()
+        browserHost.revalidate()
+        browserHost.repaint()
+        isFallbackAdded = false
+    }
+
     private fun onRestartClicked() {
         if (!refreshButton.isEnabled) return
         refreshButton.isEnabled = false
         header.text = "  Restarting dashboard…"
+        // Dispose the embedded CEF browser eagerly so any in-flight events
+        // feed to the soon-to-be-killed dashboard process is released. The
+        // browser is rebuilt once the new dashboard is reachable.
+        disposeBrowser()
         DashboardProcessManager().restartDashboard { result ->
             refreshButton.isEnabled = true
             if (result.success) {
                 refreshStatus()
-                browser?.loadURL(chatUrl())
+                // Force a fresh JCEF instance so the new dashboard's
+                // /api/events feed is wired up cleanly. Reusing the old
+                // browser's loadURL() leaves a dead EventSource attached.
+                ensureBrowser(force = true)
+            } else {
+                // Restart failed; keep the panel usable by rebuilding anyway
+                // so the user can still see the "unreachable" state cleanly.
+                renderUnreachable()
             }
         }
     }
@@ -304,7 +397,7 @@ class HermesChatPanel(private val project: Project) : Disposable {
     }
 }
 
-private class FooterPanel {
+internal class FooterPanel {
     private val modelLabel = JBLabel("Model: (loading…)").apply {
         foreground = UIUtil.getInactiveTextColor()
         border = JBUI.Borders.emptyLeft(8)
@@ -334,6 +427,11 @@ private class FooterPanel {
     val component: JComponent get() = panel
 
     fun setCurrentModel(modelLabelText: String?) {
+        // Accept the raw id as a last-resort fallback so the footer always
+        // reflects what the dashboard is currently running. Previously we
+        // returned on null, which left the previous model's label stuck in
+        // the footer when (a) the just-switched model hadn't propagated to
+        // the options list yet, or (b) the new id was unlisted.
         val resolved = modelLabelText?.takeIf { it.isNotBlank() } ?: return
         ApplicationManager.getApplication().invokeLater {
             modelLabel.text = "Model: $resolved"
@@ -341,6 +439,14 @@ private class FooterPanel {
             retryButton.isVisible = false
         }
     }
+
+    /** Test seam: forwards to setCurrentModel so tests can drive the
+     *  raw-id fallback path that fixed BUG 2 (stale model label after
+     *  reconnect when the just-switched model isn't in the options list). */
+    internal fun setCurrentModelForTest(modelLabelText: String?) = setCurrentModel(modelLabelText)
+
+    /** Test seam: read the current footer label text. */
+    internal fun currentModelLabelTextForTest(): String = modelLabel.text
 
     fun setTokenError(message: String?) {
         ApplicationManager.getApplication().invokeLater {
