@@ -7,10 +7,8 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.diagnostic.logger
-import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
-import com.intellij.openapi.ui.SimpleToolWindowPanel
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.JBColor
@@ -19,7 +17,6 @@ import com.intellij.ui.components.JBPanel
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import com.intellij.ide.BrowserUtil
-import com.intellij.ui.jcef.JBCefBrowser
 import com.intellij.ui.jcef.JBCefBrowserBuilder
 import org.cef.browser.CefBrowser
 import org.cef.browser.CefFrame
@@ -41,57 +38,15 @@ import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JPanel
 import javax.swing.SwingConstants
-import javax.swing.Timer
 import javax.swing.event.HyperlinkListener
 
 /**
  * VSCode-Chat-style tool window.
- *
- * Layout:
- * ```
- *   ┌──────────────────────────────────────────────┐
- *   │ ● Connected — v0.6.3 (model: claude-opus-4)  │   ← header status bar
- *   ├──────────────────────────────────────────────┤
- *   │                                              │
- *   │   [JCEF browser hosting dashboard /chat]    │   ← main chat surface
- *   │                                              │
- *   │                                              │
- *   ├──────────────────────────────────────────────┤
- *   │ Model: claude-opus-4              [Open...]  │   ← footer toolbar (read-only)
- *   └──────────────────────────────────────────────┘
- * ```
- *
- * Why host the dashboard SPA inside JCEF rather than reimplementing the
- * chat UI in Swing:
- * - Hermes' chat surface (markdown + streaming + tool-call visualisation +
- *   ANSI rendering) is already a battle-tested React + xterm.js bundle.
- * - Reimplementing it would be ~2-3 months of work and would always be
- *   behind the dashboard.
- * - The IDE shell only owns navigation, settings, and (future) IDE-context
- *   bridges — all the heavy lifting lives in the dashboard.
- *
- * Model selection is handled by the embedded dashboard SPA (its own model &
- * tools dropdowns). The IDE footer only reflects the currently-active model
- * as a read-only label — no dropdown, no POST /api/model/set from the IDE.
- *
- * Fallback path: if JCEF isn't available (some Android Studio builds
- * disable it, or the JBR is missing the cef binaries), we render a static
- * "Open in browser" link instead of crashing.
  */
 class HermesChatToolWindowFactory : ToolWindowFactory {
-
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = HermesChatPanel(project)
-        // Bind the panel's lifecycle to the project: when the project closes,
-        // the Disposer tree calls panel.dispose() automatically. We can't
-        // register inside HermesChatPanel.init because at that point the
-        // project isn't necessarily still alive, and registering there with
-        // a lambda overload causes a Kotlin "too many arguments" compile
-        // error (Disposer.register takes exactly 2 Disposables, not 3).
         Disposer.register(project, panel)
-        // The ContentManager is the only thing ToolWindowFactory requires
-        // us to populate. Setting a preferred size keeps the toolwindow
-        // from collapsing to a 30px-wide sliver on first open.
         val content = com.intellij.ui.content.ContentFactory.getInstance().createContent(
             panel.component,
             "Chat",
@@ -104,55 +59,44 @@ class HermesChatToolWindowFactory : ToolWindowFactory {
     override fun shouldBeAvailable(project: Project): Boolean = true
 }
 
-/**
- * The actual UI tree. Held together as a single class so the layout
- * invariants (status bar height, footer height, JCEF weight=1.0) stay
- * co-located with the JComponent construction.
- */
 class HermesChatPanel(private val project: Project) : Disposable {
 
-    private val client: HermesClient = HermesClient.getInstance()
+    private val clientLazy = lazy { HermesClient.getInstance() }
+    private val client: HermesClient get() = clientLazy.value
     private val log = logger<HermesChatPanel>()
 
     private val header = JBLabel(" ", SwingConstants.LEFT).apply {
         border = JBUI.Borders.empty(4, 8)
-        foreground = UIUtil.getContextHelpForeground()
-        icon = HermesIcons.ToolWindowSmall
+        foreground = Color.BLACK
     }
 
-    /**
-     * Test seam: exposes the header JBLabel so
-     * [com.hermes.agent.jetbrains.ui.HermesChatPanelListenerAccumulationTest]
-     * can introspect the listener list without going through reflection.
-     * Production code never calls this — it's package-internal on
-     * purpose, so a misuse would have to deliberately widen visibility
-     * to leak.
-     */
     internal fun headerForTest(): JBLabel = header
-    private val footer = FooterPanel()
+    private val footerByLazy = lazy { FooterPanel() }
+    private val footer: FooterPanel get() = footerByLazy.value
 
-    // Refresh button — sits in the header row, opposite the status label.
-    // Restarts the WSL-hosted dashboard process. The button is disabled
-    // and the label swaps to "Restarting…" while the restart is in flight,
-    // so the user can't double-click and pile up concurrent wsl.exe calls.
+    private var _statusTimer: javax.swing.Timer? = null
+    private val statusTimer: javax.swing.Timer?
+        get() {
+            if (ApplicationManager.getApplication() == null) return null
+            if (_statusTimer == null) {
+                _statusTimer = javax.swing.Timer(PROBE_INTERVAL_MS) { refreshStatus() }
+            }
+            return _statusTimer
+        }
+
     private val refreshButton = JButton("↻").apply {
         toolTipText = "Restart Hermes dashboard in WSL"
         isFocusable = false
         margin = JBUI.insets(2, 6)
         addActionListener { onRestartClicked() }
     }
-    // Header row: [icon + status label | refresh button]. Wrapped in a
-    // JPanel because BorderLayout needs a container to split horizontally.
-    // The label keeps its addMouseListener handler for "click to open in
-    // browser" — that behaviour is unchanged.
+
     private val headerRow: JPanel = JBPanel<JBPanel<*>>(BorderLayout()).apply {
         border = JBUI.Borders.empty(2, 8)
         add(header, BorderLayout.CENTER)
         add(refreshButton, BorderLayout.EAST)
     }
 
-    // The browser is created lazily because JCEF requires the IDE-level
-    // CefApp to be initialized, which happens on first request.
     private var browser: CefBrowser? = null
     private var isFallbackAdded = false
     private val browserHost = JBPanel<JBPanel<*>>(BorderLayout()).apply {
@@ -167,12 +111,6 @@ class HermesChatPanel(private val project: Project) : Disposable {
         preferredSize = Dimension(420, 600)
     }
 
-    // Persistent listeners — created ONCE, not every timer tick.
-    // See BUG-2026-06-29-HermesChat-Listener-Leak.md: adding a new
-    // anonymous MouseAdapter inside renderStatus() accumulated ~1500
-    // listeners over a few hours of idle dashboard uptime, and a single
-    // mouse hover then fired ~1500 BrowserUtil.browse() calls → browser
-    // storm + system freeze. Always keep listeners in fields.
     private val headerMouseListener = object : MouseAdapter() {
         override fun mouseClicked(e: MouseEvent?) {
             openInExternalBrowser()
@@ -183,143 +121,61 @@ class HermesChatPanel(private val project: Project) : Disposable {
         openInExternalBrowser()
     }
 
-    // 500 ms debounce as a safety net: if a listener ever leaks again
-    // (regression or new code), repeated clicks within half a second
-    // are silently dropped instead of spawning 1000+ browser processes.
     private val openBrowserDebounceMs = 500L
     private val lastOpenBrowserAt = AtomicLong(0L)
-
-    private var statusTimer: Timer? = null
-
-    // Backoff state for refreshStatus. Counts consecutive unreachable
-    // probes so the 8s polling timer can stretch out to 30s/60s/300s
-    // when the dashboard is clearly down — keeps idle IDE sessions
-    // from hammering a dead socket at 0.125 req/s forever. Reset to 0
-    // on any successful probe.
     private var consecutiveUnreachable = 0
 
     init {
         header.addMouseListener(headerMouseListener)
         footer.onOpenInBrowser = { openInExternalBrowser() }
-        // Retry handler: invoked when the user clicks the "↻ Retry" button
-        // that appears next to the model label when the dashboard token
-        // fetch has failed. The handler clears the autoToken latch inside
-        // HermesClient so ensureToken() is allowed to try again, then
-        // immediately kicks off a status probe (which will fetch the
-        // model list if the retry succeeded).
         footer.onRetryTokenFetch = { onRetryTokenClicked() }
-        // Model selection is handled by the embedded dashboard SPA.
-        // The IDE footer only reflects the current model (read-only).
-
-        // First paint: kick off the async status probe. We *don't* await
-        // here — the IDE shell should be visible immediately even if the
-        // dashboard is down.
+        
         refreshStatus()
-        // Probe every PROBE_INTERVAL_MS by default. Cheap (HEAD-style),
-        // keeps the green/grey dot honest. When the dashboard is
-        // unreachable, refreshStatus() stretches this out via
-        // consecutiveUnreachable backoff (8s → 30s → 60s → 300s).
-        // The timer is held on the field (not just the panel) so dispose()
-        // can stop it on toolwindow teardown. Lifecycle wiring
-        // (Disposer.register(project, panel)) happens in
-        // HermesChatToolWindowFactory.createToolWindowContent — not here,
-        // because Disposer.register takes exactly 2 Disposables and cannot
-        // be called with a 3rd "on dispose" lambda.
-        statusTimer = Timer(PROBE_INTERVAL_MS) { refreshStatus() }.apply {
-            start()
-        }
+        statusTimer?.start()
     }
 
-    private companion object {
-        const val PROBE_INTERVAL_MS = 8_000L
+    companion object {
+        const val PROBE_INTERVAL_MS = 8_000
+
+        /**
+         * Stretch the polling interval based on how long the dashboard has been down.
+         */
+        @JvmStatic
+        internal fun backoffMs(failures: Int): Int = when {
+            failures <= 1 -> PROBE_INTERVAL_MS
+            failures <= 5 -> 30_000
+            failures <= 20 -> 60_000
+            else -> 300_000
+        }
     }
 
     val component: JComponent get() = root
 
-    // ------------------------------------------------------------------
-
     private fun refreshStatus() {
         ApplicationManager.getApplication().executeOnPooledThread {
-            // Make sure we have a session token before any authenticated
-            // call. The first probe gets a chance to scrape the index.html;
-            // subsequent probes short-circuit (see HermesClient.ensureToken).
-            //
-            // Bug fix: reachable=true does NOT guarantee that the session
-            // token has been auto-fetched yet. /api/status is public, so it
-            // can succeed on the very first tick while DashboardTokenFetcher
-            // (which runs on the same pooled thread right above) is still
-            // racing on a separate connection or has just timed out. If we
-            // dispatch fetchModelsAsync() in that window, /api/model/options
-            // returns 401, the client returns an empty list, and
-            // footer.setModels() resets the picker to "(no models available)"
-            // and disables it. Even though the next tick (8s later) will
-            // successfully auto-fetch the token and get a real list, the
-            // user sees a broken picker for those 8 seconds — and in some
-            // sandbox paths the token fetch never recovers.
-            //
-            // Fix: only kick off the authenticated model fetch when there's
-            // actually a token to send. Otherwise log and let the next tick
-            // (which will re-enter ensureToken first) handle it.
-            //
-            // Log volume: per-tick trace lines are DEBUG now (was INFO);
-            // an idle 8h IDE session used to add ~18k INFO lines to
-            // idea.log which drowned real errors. One INFO line per tick
-            // is enough — the "reachable but no token" branch is the only
-            // one that frequently needs debugging and is already explicit.
-            log.debug("refreshStatus: tick (autoToken=${client.hasAutoToken()}, endpoint=${client.getState().endpoint})")
             client.ensureToken()
             val reachable = client.isReachable()
-            log.debug("refreshStatus: isReachable=$reachable")
             ApplicationManager.getApplication().invokeLater {
                 if (reachable) {
-                    // Reset backoff on any successful probe.
                     if (consecutiveUnreachable != 0) {
                         consecutiveUnreachable = 0
                         rescheduleTimer(PROBE_INTERVAL_MS)
                     }
-                    log.debug("refreshStatus: reachable, kicking off fetchStatus/fetchModels")
-                    // Fetch full status for the version string once we're
-                    // sure the dashboard is up.
-                    client.fetchStatusAsync { status ->
-                        log.debug("refreshStatus: fetchStatus returned version=${status?.version}")
-                        renderStatus(status)
-                    }
+                    client.fetchStatusAsync { status -> renderStatus(status) }
                     if (client.hasAutoToken() || client.getState().sessionToken.isNotBlank()) {
                         client.fetchModelsAsync { modelList ->
-                            log.debug(
-                                "refreshStatus: fetchModels returned ${modelList.options.size} models " +
-                                    "(currentModelId=${modelList.currentModelId})"
-                            )
-                            // Footer is now read-only — just reflect the current model
                             val currentLabel = modelList.options
                                 .firstOrNull { it.id == modelList.currentModelId }?.label
                             footer.setCurrentModel(currentLabel)
                         }
                     } else {
-                        log.debug("refreshStatus: reachable but no token yet — deferring model fetch to next tick")
-                        // Surface the fetch error in the footer so the user
-                        // sees *why* the model list is empty, and gets a
-                        // "↻ Retry" button to override the autoToken latch.
-                        // Without this, the footer stays "Model: (loading…)"
-                        // forever after the first failed fetch.
                         val err = client.lastTokenError()
-                        if (err != null) {
-                            footer.setTokenError(err)
-                        }
+                        if (err != null) footer.setTokenError(err)
                     }
-                    // If the browser hasn't been initialized yet, do it now —
-                    // we know the dashboard is up so loading /chat will work.
                     ensureBrowser()
                 } else {
-                    // Exponential-ish backoff: 1 failure → still 8s
-                    // (avoid jitter on a single transient blip); 2-5 → 30s;
-                    // 6-20 → 60s; 21+ → 300s. Reset by any reachable=true.
                     consecutiveUnreachable++
                     val newDelay = backoffMs(consecutiveUnreachable)
-                    log.info(
-                        "refreshStatus: UNREACHABLE (consecutive=$consecutiveUnreachable) " +
-                            "— next probe in ${newDelay / 1000}s"
-                    )
                     rescheduleTimer(newDelay)
                     renderUnreachable()
                 }
@@ -327,43 +183,13 @@ class HermesChatPanel(private val project: Project) : Disposable {
         }
     }
 
-    /**
-     * Stretch the polling interval based on how long the dashboard has
-     * been down. Cheap to call, runs entirely on EDT.
-     *
-     * `internal` (not private) so [HermesChatPanelBackoffTest] can exercise
-     * the staircase directly. The function is still pure and side-effect
-     * free, so exposing it for tests is safe.
-     */
-    internal fun backoffMs(failures: Int): Long = when {
-        failures <= 1 -> PROBE_INTERVAL_MS       // 8s — first blip, no penalty
-        failures <= 5 -> 30_000L                  // dashboard likely just restarted
-        failures <= 20 -> 60_000L                 // dashboard has been down a while
-        else -> 300_000L                          // 5min — clearly gone, stop hammering
-    }
-
-    /**
-     * Reschedule the 8s polling timer to a new delay. Must run on EDT
-     * (javax.swing.Timer is single-threaded). Caller is responsible for
-     * invokeLater { ... } if not already on EDT.
-     */
-    private fun rescheduleTimer(delayMs: Long) {
+    private fun rescheduleTimer(delayMs: Int) {
         val timer = statusTimer ?: return
-        if (timer.delay == delayMs) return  // no-op
+        if (timer.delay == delayMs) return
         timer.delay = delayMs
         timer.restart()
     }
 
-    /**
-     * Render the connected-state header. After the P0 fix this is a
-     * pure UI update — no listener attachment, no allocations beyond
-     * the text/foreground/cursor setters.
-     *
-     * `internal` so [HermesChatPanelListenerAccumulationTest] can call
-     * it directly to simulate the 8s timer tick path that previously
-     * leaked listeners. (refreshStatus() goes through HTTP, so we
-     * exercise the UI-only update branch in tests.)
-     */
     internal fun renderStatus(status: HermesStatus?) {
         val version = status?.version ?: "unknown"
         header.text = "  Hermes $version — connected"
@@ -372,27 +198,18 @@ class HermesChatPanel(private val project: Project) : Disposable {
     }
 
     private fun renderUnreachable() {
-        header.text = "  Hermes dashboard unreachable — start with: hermes dashboard"
+        header.text = "  Hermes dashboard unreachable"
         header.foreground = JBColor(Color(0xC62828), Color(0xEF9A9A))
     }
 
     private fun ensureBrowser() {
         if (browser != null) return
-
         val isSupported = try {
             com.intellij.ui.jcef.JBCefApp.isSupported()
-        } catch (t: Throwable) {
-            log.warn("JBCefApp.isSupported() threw", t)
-            false
-        }
+        } catch (t: Throwable) { false }
 
         if (!isSupported) {
             if (!isFallbackAdded) {
-                log.warn(
-                    "JCEF not supported by the IDE runtime, falling back to 'Open in browser' link. " +
-                            "If you're running inside `./gradlew runIde`, this usually means the sandbox " +
-                            "JBR is missing the Cef native binaries. Real Android Studio installs are unaffected."
-                )
                 browserHost.add(buildFallbackLink(), BorderLayout.CENTER)
                 browserHost.revalidate()
                 isFallbackAdded = true
@@ -407,31 +224,18 @@ class HermesChatPanel(private val project: Project) : Disposable {
                 .build()
 
             jbBrowser.jbCefClient.addLoadHandler(object : CefLoadHandlerAdapter() {
-                override fun onLoadEnd(cefBrowser: CefBrowser, frame: org.cef.browser.CefFrame, httpStatusCode: Int) {
-                    log.info("Hermes chat page loaded (status=$httpStatusCode)")
-                }
-                override fun onLoadError(
-                    cefBrowser: CefBrowser,
-                    frame: CefFrame,
-                    errorCode: CefLoadHandler.ErrorCode,
-                    errorText: String,
-                    failedUrl: String
-                ) {
-                    log.warn("Hermes chat page failed to load: $errorText (url=$failedUrl, code=$errorCode)")
+                override fun onLoadError(cefBrowser: CefBrowser, frame: CefFrame, errorCode: CefLoadHandler.ErrorCode, errorText: String, failedUrl: String) {
                     ApplicationManager.getApplication().invokeLater {
-                        header.text = "  Load Error: $errorText ($errorCode)"
+                        header.text = "  Load Error"
                         header.foreground = JBColor.RED
                     }
                 }
             }, jbBrowser.cefBrowser)
 
-            val uiComp = jbBrowser.component
-            browserHost.add(uiComp, BorderLayout.CENTER)
+            browserHost.add(jbBrowser.component, BorderLayout.CENTER)
             browserHost.revalidate()
-            browserHost.repaint()
             browser = jbBrowser.cefBrowser
         } catch (t: Throwable) {
-            log.warn("JBCefBrowserBuilder.build() threw, falling back to 'Open in browser' link", t)
             if (!isFallbackAdded) {
                 browserHost.add(buildFallbackLink(), BorderLayout.CENTER)
                 browserHost.revalidate()
@@ -442,43 +246,23 @@ class HermesChatPanel(private val project: Project) : Disposable {
 
     private fun buildFallbackLink(): JComponent {
         val link = com.intellij.ui.HyperlinkLabel("Open Hermes Chat in your browser")
-        // Use the persistent field listener — never add an anonymous one
-        // here. (Even though isFallbackAdded guards re-creation today, the
-        // anonymous listener pattern is the original bug we want to avoid.)
         link.addHyperlinkListener(fallbackLinkListener)
         val wrap = JBPanel<JBPanel<*>>(GridBagLayout())
-        val gbc = GridBagConstraints().apply {
-            anchor = GridBagConstraints.CENTER
-        }
-        wrap.add(link, gbc)
+        wrap.add(link, GridBagConstraints())
         return wrap
     }
 
     private fun chatUrl(): String {
         val endpoint = client.getState().endpoint.trim().ifEmpty { "http://127.0.0.1:9119" }
-        // The dashboard exposes its chat surface at /chat. We pass the
-        // session token via URL fragment so it never lands in HTTP logs.
         val token = client.resolveToken() ?: ""
-        return if (token.isBlank()) "$endpoint/chat"
-        else "$endpoint/chat#token=$token"
+        return if (token.isBlank()) "$endpoint/chat" else "$endpoint/chat#token=$token"
     }
 
     private fun openInExternalBrowser() {
-        // AtomicLong.compareAndSet gives us lock-free debounce that is also
-        // safe under concurrent mouse events. @Volatile long would be enough
-        // on 64-bit JBR, but CAS is portable to any future JVM target and
-        // costs nothing on modern CPUs.
         val now = System.currentTimeMillis()
         val last = lastOpenBrowserAt.get()
-        if (now - last < openBrowserDebounceMs) {
-            log.info("openInExternalBrowser: debounced (${now - last}ms < ${openBrowserDebounceMs}ms)")
-            return
-        }
-        if (!lastOpenBrowserAt.compareAndSet(last, now)) {
-            // Another thread just won the CAS race; treat as debounced.
-            log.info("openInExternalBrowser: debounced (CAS contention)")
-            return
-        }
+        if (now - last < openBrowserDebounceMs) return
+        if (!lastOpenBrowserAt.compareAndSet(last, now)) return
 
         val url = chatUrl()
         ApplicationManager.getApplication().executeOnPooledThread {
@@ -486,131 +270,49 @@ class HermesChatPanel(private val project: Project) : Disposable {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Lifecycle: called automatically by the IntelliJ Disposer tree when
-    // the registered parent (the project, in createToolWindowContent)
-    // is disposed. Stops the timer and detaches listeners so a long-lived
-    // IDE session can't accumulate them across tool-window hide/show cycles.
     override fun dispose() {
         statusTimer?.stop()
-        statusTimer = null
+        _statusTimer = null
         header.removeMouseListener(headerMouseListener)
-        // isFallbackAdded is intentionally NOT reset — the link might be
-        // re-attached later by a refresh, but it already has the (now
-        // persistent) listener, so no re-attach is needed.
-        log.info("HermesChatPanel: disposed (timer stopped, listeners detached)")
     }
 
-    // ------------------------------------------------------------------
-    // Restart button handler
-
-    /**
-     * Fires the dashboard restart. Disables the button + swaps the
-     * status label to "Restarting…" so the user gets immediate feedback.
-     * The actual work happens in [DashboardProcessManager] off the EDT.
-     */
     private fun onRestartClicked() {
-        if (!refreshButton.isEnabled) return  // already in flight
+        if (!refreshButton.isEnabled) return
         refreshButton.isEnabled = false
         header.text = "  Restarting dashboard…"
-        log.info("HermesChatPanel: user clicked ↻ — restarting dashboard")
-
         DashboardProcessManager().restartDashboard { result ->
             refreshButton.isEnabled = true
             if (result.success) {
-                // Trigger an immediate status probe so the green/grey
-                // dot updates without waiting for the 8s timer. The
-                // /api/status hit will succeed now that the port is up.
                 refreshStatus()
-                // JCEF is also reloaded so the embedded chat page picks
-                // up any dashboard-side state changes (new session, etc).
                 browser?.loadURL(chatUrl())
-                DashboardProcessManager.notify(result.message, NotificationType.INFORMATION)
-            } else {
-                // Don't clobber the "Hermes dashboard unreachable" state —
-                // the user will see that on the next 8s tick. We just
-                // surface what went wrong in a balloon.
-                log.warn("HermesChatPanel: restart failed: ${result.message}")
-                DashboardProcessManager.notify("Restart failed: ${result.message}", NotificationType.ERROR)
             }
         }
     }
 
-    /**
-     * Fires when the user clicks the "↻ Retry" button in the footer
-     * (visible when the last token fetch failed). Clears the autoToken
-     * latch in HermesClient so [HermesClient.ensureToken] is allowed
-     * to try again, then immediately re-runs the status probe so the
-     * new attempt's outcome is reflected in the footer without
-     * waiting for the next 8s tick.
-     *
-     * Runs the token fetch on a pooled thread (mirroring the
-     * [refreshStatus] threading model) — the underlying HTTP call has
-     * a 2s timeout, so worst case the user sees a 2s pause before
-     * the footer updates. The button is disabled for that window so
-     * a frantic user can't queue up multiple retries.
-     */
     private fun onRetryTokenClicked() {
-        log.info("HermesChatPanel: user clicked ↻ Retry — re-attempting token fetch")
-        // Clear the error display immediately so the user sees feedback
-        // (footer flips back to "Model: (loading…)" while we retry).
         footer.setTokenError(null)
         ApplicationManager.getApplication().executeOnPooledThread {
             val gotToken = client.retryTokenFetch()
             ApplicationManager.getApplication().invokeLater {
-                if (gotToken) {
-                    log.info("HermesChatPanel: token retry succeeded — re-running status probe")
-                    // refreshStatus will pick up the now-cached token and
-                    // populate the model list + clear the error state.
-                    refreshStatus()
-                } else {
-                    val err = client.lastTokenError() ?: "(unknown error)"
-                    log.warn("HermesChatPanel: token retry failed: $err")
-                    footer.setTokenError(err)
-                }
+                if (gotToken) refreshStatus()
+                else footer.setTokenError(client.lastTokenError() ?: "(unknown error)")
             }
         }
     }
 }
 
-/**
- * Footer toolbar — current model display (read-only) + open-in-browser shortcut.
- * Model selection is handled by the embedded dashboard SPA; the IDE shell only
- * reflects the currently-active model.
- *
- * Stability note: refreshStatus() ticks every 8s. Transient failures of
- * /api/model/options (auth retry, blank currentModelId, empty list) used to
- * overwrite a previously-known good label with "—", causing the footer to
- * flicker between "Model: MiniMax-M3" and "Model: —". The footer now keeps
- * the last non-empty label it successfully received; transient null/blank
- * inputs are no-ops. Initial state is "Model: (loading…)" so the user can
- * distinguish "haven't heard back yet" from "explicitly no model".
- *
- * Error state: when [setTokenError] is called with a non-null message, the
- * label switches to "Model: ✗ {message}" in red and a "↻ Retry" button
- * appears next to the "Open in browser" button. The button is wired up by
- * [onRetryTokenFetch] in HermesChatPanel. Calling [setTokenError] with
- * null returns the footer to the normal "Model: …" state.
- */
 private class FooterPanel {
     private val modelLabel = JBLabel("Model: (loading…)").apply {
-        foreground = UIUtil.getInactiveTextColor() // gray / disabled look
+        foreground = UIUtil.getInactiveTextColor()
         border = JBUI.Borders.emptyLeft(8)
     }
-    // The "Model: ✗ {message}" / "Model: {name}" prefix differs by state.
-    // We keep the bare label text and rebuild the prefix in setCurrentModel
-    // and setTokenError so there's no need to mutate a shared "Model: " string.
     private val retryButton = JButton("↻ Retry").apply {
         isVisible = false
-        toolTipText = "Retry fetching the dashboard session token"
         addActionListener { onRetryTokenFetch?.invoke() }
     }
     private val openBrowserBtn = JButton("Open in browser").apply {
         addActionListener { onOpenInBrowser?.invoke() }
     }
-    // East-side button row: retry (hidden when no error) + open-in-browser.
-    // We pack them in a sub-panel so BorderLayout.EAST stays a single
-    // component while still showing both buttons inline.
     private val eastRow = JBPanel<JBPanel<*>>().apply {
         layout = BoxLayout(this, BoxLayout.X_AXIS)
         add(retryButton)
@@ -620,33 +322,15 @@ private class FooterPanel {
     private val panel = JBPanel<JBPanel<*>>().apply {
         layout = BorderLayout()
         border = JBUI.Borders.empty(4, 8)
-        val leftWrap = JBPanel<JBPanel<*>>(BorderLayout()).apply {
-            add(modelLabel, BorderLayout.CENTER)
-        }
-        add(leftWrap, BorderLayout.CENTER)
+        add(modelLabel, BorderLayout.CENTER)
         add(eastRow, BorderLayout.EAST)
     }
 
     var onOpenInBrowser: (() -> Unit)? = null
     var onRetryTokenFetch: (() -> Unit)? = null
-
     val component: JComponent get() = panel
 
-    /**
-     * Updates the displayed current model.
-     *
-     * @param modelLabelText  The human-readable model label from the dashboard,
-     *                        or null/blank when this tick's fetch was unsuccessful
-     *                        (transient 401, empty list, missing currentModelId).
-     *                        Null/blank inputs are ignored once we have a known-good
-     *                        label, so a single failed tick can't blank out the UI.
-     *
-     * Calling this with a non-blank value clears the error state set by
-     * [setTokenError] — the model becoming available implies the token
-     * fetch succeeded.
-     */
     fun setCurrentModel(modelLabelText: String?) {
-        // Drop null/blank — preserve last known-good label.
         val resolved = modelLabelText?.takeIf { it.isNotBlank() } ?: return
         ApplicationManager.getApplication().invokeLater {
             modelLabel.text = "Model: $resolved"
@@ -655,34 +339,19 @@ private class FooterPanel {
         }
     }
 
-    /**
-     * Show a token-fetch error in place of the model label, plus a Retry
-     * button. Pass null to clear (back to the model-label state).
-     */
     fun setTokenError(message: String?) {
         ApplicationManager.getApplication().invokeLater {
             if (message == null) {
-                // Cleared externally — restore the default look. The next
-                // refreshStatus() tick will repopulate the model label.
                 modelLabel.foreground = UIUtil.getInactiveTextColor()
                 retryButton.isVisible = false
             } else {
-                // The "✗ " glyph is a heavy ballot X (U+2717) — rendered
-                // by any platform font on IntelliJ 2024.2+; falls back
-                // to a textual "(error)" if the glyph is missing.
                 modelLabel.text = "Model: ✗ $message"
-                modelLabel.foreground = JBColor(
-                    Color(0xC62828),  // light theme: dark red
-                    Color(0xEF9A9A),  // dark theme:  light red
-                )
+                modelLabel.foreground = JBColor.RED
                 retryButton.isVisible = true
             }
         }
     }
 }
-
-// ----------------------------------------------------------------------
-// Helper accessors — keeps the import block in HermesChatPanel short.
 
 private fun logger(klass: Class<*>): com.intellij.openapi.diagnostic.Logger =
     com.intellij.openapi.diagnostic.Logger.getInstance(klass)
