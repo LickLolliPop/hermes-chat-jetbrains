@@ -23,6 +23,7 @@ import org.cef.browser.CefFrame
 import org.cef.handler.CefLoadHandler
 import org.cef.handler.CefLoadHandlerAdapter
 import java.awt.BorderLayout
+import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.GridBagConstraints
