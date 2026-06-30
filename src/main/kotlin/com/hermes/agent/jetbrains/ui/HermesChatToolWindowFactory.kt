@@ -85,10 +85,12 @@ class HermesChatPanel(private val project: Project) : Disposable {
             return _statusTimer
         }
 
-    private val refreshButton = JButton("↻").apply {
-        toolTipText = "Restart Hermes dashboard in WSL"
+    private val refreshButton = JButton(com.intellij.icons.AllIcons.Actions.Refresh).apply {
+        toolTipText = "Restart Hermes dashboard"
         isFocusable = false
-        margin = JBUI.insets(2, 6)
+        isBorderPainted = false
+        isContentAreaFilled = false
+        margin = JBUI.insets(2)
         addActionListener { onRestartClicked() }
     }
 

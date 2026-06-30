@@ -8,18 +8,16 @@ import javax.swing.Icon
  */
 object HermesIcons {
     /** Sidebar tool-window glyph — a chat-bubble variant of Hermes' mark. */
-    val ToolWindow: Icon by lazy {
-        IconLoader.getIcon(
-            "/icons/hermesChat.svg",
-            HermesIcons::class.java,
-        )
-    }
+    @JvmField
+    val ToolWindow: Icon = IconLoader.getIcon(
+        "/icons/hermesChat.svg",
+        HermesIcons::class.java,
+    )
 
     /** Smaller variant for menus and inline labels. */
-    val ToolWindowSmall: Icon by lazy {
-        IconLoader.getIcon(
-            "/icons/hermesChat_16.svg",
-            HermesIcons::class.java,
-        )
-    }
+    @JvmField
+    val ToolWindowSmall: Icon = IconLoader.getIcon(
+        "/icons/hermesChat_16.svg",
+        HermesIcons::class.java,
+    )
 }
