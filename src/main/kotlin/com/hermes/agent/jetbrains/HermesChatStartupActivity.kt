@@ -35,7 +35,7 @@ class HermesChatStartupActivity : ProjectActivity {
 
     override suspend fun execute(project: Project) {
         val client = HermesClient.getInstance()
-        
+
         // Use Coroutines instead of manual executeOnPooledThread
         val reachable = withContext(Dispatchers.IO) {
             client.isReachable()
@@ -43,7 +43,16 @@ class HermesChatStartupActivity : ProjectActivity {
 
         withContext(Dispatchers.Main) {
             if (!reachable) {
-                notifyDashboardDown(project)
+                // When the user has opted out of automatic dashboard
+                // management, a missing dashboard is normal (they're
+                // managing it themselves via systemd / launchd / a
+                // separate terminal / Docker). Don't nag them with a
+                // notification; the panel already shows the unreachable
+                // state and the settings panel shows the manual-launch
+                // command.
+                if (client.getState().manageAutomatically) {
+                    notifyDashboardDown(project)
+                }
             } else {
                 client.fetchStatusAsync { status: HermesStatus? ->
                     log.info("Hermes dashboard reachable, version=${status?.version}")

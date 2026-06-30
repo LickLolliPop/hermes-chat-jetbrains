@@ -37,6 +37,20 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
         var endpoint: String = "http://127.0.0.1:9119",
         var sessionToken: String = "",
         var defaultModelId: String = "",
+        /**
+         * If true (default), the plugin spawns and restarts the Hermes
+         * dashboard process automatically via DashboardProcessManager.
+         * If false, the plugin only consumes an already-running dashboard
+         * — useful on systems where the user manages the daemon another
+         * way (systemd, launchd, manual terminal, Docker, remote SSH, …).
+         *
+         * Per-OS defaults: leaving this true means Windows hosts will try
+         * to use WSL and Mac/Linux hosts will try to spawn `hermes` from
+         * the user's PATH. Users who don't have `hermes` installed
+         * locally (e.g. WSL not set up) should toggle this off and run
+         * the dashboard manually.
+         */
+        var manageAutomatically: Boolean = true,
     )
 
     private val stateRef = AtomicReference(State())
@@ -83,12 +97,18 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
         autoTokenAttempted = false
     }
 
-    fun updateSettings(endpoint: String? = null, token: String? = null, model: String? = null) {
+    fun updateSettings(
+        endpoint: String? = null,
+        token: String? = null,
+        model: String? = null,
+        manageAutomatically: Boolean? = null,
+    ) {
         val current = stateRef.get()
         stateRef.set(current.copy(
             endpoint = endpoint?.takeIf { it.isNotBlank() } ?: current.endpoint,
             sessionToken = token ?: current.sessionToken,
             defaultModelId = model ?: current.defaultModelId,
+            manageAutomatically = manageAutomatically ?: current.manageAutomatically,
         ))
         // Endpoint change invalidates the cached auto-token. The next
         // resolveToken() call will re-fetch against the new endpoint.

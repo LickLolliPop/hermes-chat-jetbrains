@@ -82,11 +82,50 @@ WebSocket gets added.
 
 ## File-by-file reasoning
 
+### Platform support matrix
+
+The dashboard process manager dispatches by OS at runtime:
+
+| Host OS | Strategy | Process launcher | Detach trick | Status |
+|---|---|---|---|---|
+| Windows (with WSL) | `WindowsWslStrategy` | `wsl.exe bash -lc` | `tmux new-session -d` (mandatory — `nohup`/`setsid`/`&` all die with `wsl.exe`'s process group SIGTERM) | default & tested 2026-06-29 |
+| macOS | `MacLinuxStrategy(isMac=true)` | `bash -lc` directly | `nohup … & disown` (JVM-spawned child isn't in a cross-OS process group) | new in v0.2.0 |
+| Linux | `MacLinuxStrategy(isMac=false)` | `bash -lc` directly | `nohup … & disown` | new in v0.2.0 |
+| Windows (no WSL) | `WindowsWslStrategy` | `wsl.exe …` → fails fast | — | user sees clear error; should toggle "Manage dashboard automatically" off |
+
+The user can opt out of automatic management entirely via Settings →
+Tools → Hermes Chat → "Manage dashboard automatically". When off:
+- The restart button becomes a re-probe/rebuild button (no external
+  process spawned).
+- The startup "dashboard not reachable" notification is suppressed
+  (the panel still shows unreachable state).
+- A manual-launch hint appears in settings with the OS-specific
+  shell command (`hermes dashboard --no-open` on Mac/Linux,
+  `wsl.exe bash -lc 'hermes dashboard --no-open'` on Windows).
+
+This makes the plugin usable on Mac/Linux without any process-manager
+plumbing changes from the user.
+
 ### `HermesChatToolWindowFactory.kt`
 - Hosts the JCEF browser at `endpoint/chat`
 - Status bar polls `/api/status` every 8s (cheap HEAD-style probe)
 - Falls back to "Open in browser" link if JCEF fails to init
 - Status bar click → open dashboard in external browser
+
+### `DashboardProcessManager.kt` (facade) + strategies
+- Pick the right per-OS `DashboardProcessStrategy` (`WindowsWslStrategy`
+  or `MacLinuxStrategy`) at construction time and delegate everything
+  else. Callers bind to this facade, not to a specific strategy.
+- `DashboardProcessStrategy.forCurrentOs()` picks via
+  `System.getProperty("os.name")`; unknown OSes fall back to
+  `MacLinuxStrategy` (POSIX `nohup` is portable enough).
+- The "Manage dashboard automatically" setting (`HermesClient.State.
+  manageAutomatically`) gates the entire facade: when off, the UI's
+  restart button becomes a re-probe instead of a process spawn.
+- See `references/wsl-dashboard-process-manager.md` (Windows path)
+  and `references/cross-os-process-manager.md` (Mac/Linux path,
+  plus the dispatch pattern + auto-manage UX) for the per-OS
+  rationale.
 
 ### `HermesClient.kt`
 - Singleton service, persists endpoint/token/model
@@ -100,13 +139,19 @@ WebSocket gets added.
 - Manual JSON parser is regex-based — see invariant #4
 
 ### `HermesChatConfigurable.kt`
-- Three fields + Test button + status label
+- Four fields + Test button + status label:
+  endpoint, session token, default model, and the
+  "Manage dashboard automatically" toggle (which reveals a per-OS
+  manual-launch command hint when unchecked).
 - "Test" probes `/api/status` and refreshes the model dropdown
 - Validates endpoint URL on Apply (must start with http:// or https://)
 - Does NOT validate token format — Hermes may rotate token formats
 
 ### `HermesChatStartupActivity.kt`
 - One-shot "Hermes dashboard unreachable" notification on first project
+  (suppressed when "Manage dashboard automatically" is off — the user
+  is managing the dashboard themselves and a missing dashboard is
+  normal).
 - Auto-opens toolwindow on first IDE install (controlled by system
   property; survives until JVM restart — acceptable for one-time UX nudge)
 
@@ -143,6 +188,18 @@ WebSocket gets added.
 3. Add to `isModified()` and `apply()`
 4. Call `HermesClient.getInstance().updateSettings(...)` from anywhere
    that needs to write the value programmatically
+
+### Adding a new platform strategy
+1. Implement `DashboardProcessStrategy` (the four methods: `restart`,
+   `isRunning`, `homeDir`).
+2. Register it in `DashboardProcessStrategy.forCurrentOs()`.
+3. Add a row to the "Platform support matrix" table in this file's
+   Platform support matrix section.
+4. If the OS needs cross-cutting logic (like the WSL `tmux` trap),
+   write a `references/<os>-dashboard-process-manager.md` skill
+   reference so future maintainers don't rediscover the trap.
+   The cross-OS dispatch pattern + auto-manage UX is documented
+   in `references/cross-os-process-manager.md`; start there.
 
 ### Touching Hermes' protocol
 If you're modifying both this plugin and the dashboard SPA together, the

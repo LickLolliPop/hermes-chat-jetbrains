@@ -366,6 +366,22 @@ class HermesChatPanel(private val project: Project) : Disposable {
     private fun onRestartClicked() {
         if (!refreshButton.isEnabled) return
         refreshButton.isEnabled = false
+        // When the user has opted out of automatic dashboard management,
+        // the restart button becomes a "re-probe / refresh" button instead
+        // — it just discards the cached token and rebuilds the JCEF view,
+        // expecting the user to have started the dashboard themselves.
+        if (!client.getState().manageAutomatically) {
+            header.text = "  Re-checking dashboard…"
+            client.invalidateAutoToken()
+            disposeBrowser()
+            // No external process to spawn; just rebuild the browser and
+            // refresh status so the panel reflects whatever the user has
+            // started in their own terminal / daemon manager.
+            ensureBrowser(force = true)
+            refreshStatus()
+            refreshButton.isEnabled = true
+            return
+        }
         header.text = "  Restarting dashboard…"
         // New dashboard mints a fresh token; drop the cached one so the
         // first refresh doesn't waste a roundtrip on a guaranteed 401.
