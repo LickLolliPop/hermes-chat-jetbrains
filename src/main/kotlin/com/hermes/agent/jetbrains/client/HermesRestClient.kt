@@ -18,6 +18,9 @@ import java.time.Duration
 class HermesRestClient(
     private val endpointProvider: () -> URI,
     private val tokenProvider: () -> String?,
+    // Fired on a 401 so the caller can invalidate its cached auto-token.
+    // Wired by HermesClient to invalidateAutoToken(); tests pass a no-op.
+    private val onAuthFailure: (() -> Unit)? = null,
 ) {
 
     private val httpClient: HttpClient = HttpClient.newBuilder()
@@ -40,25 +43,43 @@ class HermesRestClient(
         return builder
     }
 
-    fun getOrNull(path: String): String? {
+    fun getOrNull(path: String, retryOnAuth: Boolean = false): String? {
+        val first = sendGet(path) ?: return null
+        if (first.statusCode() in 200..299) return first.body()
+        if (first.statusCode() == 401 && retryOnAuth) {
+            // Token rotated (dashboard restart, etc.). Invalidate and retry
+            // once with the freshly-scraped token.
+            onAuthFailure?.invoke()
+            val second = sendGet(path) ?: return null
+            if (second.statusCode() in 200..299) return second.body()
+            return null
+        }
+        return null
+    }
+
+    private fun sendGet(path: String): HttpResponse<String>? {
         return try {
-            val resp = httpClient.send(
+            httpClient.send(
                 authedRequest(path).GET().build(),
                 HttpResponse.BodyHandlers.ofString()
             )
-            if (resp.statusCode() in 200..299) resp.body() else null
         } catch (_: Exception) {
             null
         }
     }
 
     fun getStatus(): HermesStatus? {
+        // /api/status is in PUBLIC_API_PATHS — never 401s. No retry.
         val body = getOrNull("/api/status") ?: return null
         return parseStatus(body)
     }
 
     fun listModels(): HermesModelList {
-        val body = getOrNull("/api/model/options") ?: return HermesModelList(emptyList(), null)
+        // /api/model/options is gated. Stale autoToken → 401 → empty list
+        // → footer stuck on previous model. Retry self-heals without
+        // needing the user to click "Retry".
+        val body = getOrNull("/api/model/options", retryOnAuth = true)
+            ?: return HermesModelList(emptyList(), null)
         return parseModelOptions(body)
     }
 

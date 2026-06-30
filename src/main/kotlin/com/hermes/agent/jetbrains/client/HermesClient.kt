@@ -53,6 +53,7 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
         HermesRestClient(
             endpointProvider = { URI.create(currentState().endpoint.trim().ifEmpty { "http://127.0.0.1:9119" }) },
             tokenProvider = { resolveToken() },
+            onAuthFailure = { invalidateAutoToken() },
         )
     }
 
@@ -69,6 +70,17 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
         val manual = currentState().sessionToken.takeIf { it.isNotBlank() }
         if (manual != null) return manual
         return autoToken
+    }
+
+    /**
+     * Drop the cached auto-fetched token and the "already tried" latch so
+     * the next [ensureToken] call re-scrapes the SPA HTML. No-op when the
+     * user has pinned a manual token in Settings.
+     */
+    fun invalidateAutoToken() {
+        if (currentState().sessionToken.isNotBlank()) return
+        autoToken = null
+        autoTokenAttempted = false
     }
 
     fun updateSettings(endpoint: String? = null, token: String? = null, model: String? = null) {

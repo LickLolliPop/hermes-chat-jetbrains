@@ -365,6 +365,9 @@ class HermesChatPanel(private val project: Project) : Disposable {
         if (!refreshButton.isEnabled) return
         refreshButton.isEnabled = false
         header.text = "  Restarting dashboard…"
+        // New dashboard mints a fresh token; drop the cached one so the
+        // first refresh doesn't waste a roundtrip on a guaranteed 401.
+        client.invalidateAutoToken()
         // Dispose the embedded CEF browser eagerly so any in-flight events
         // feed to the soon-to-be-killed dashboard process is released. The
         // browser is rebuilt once the new dashboard is reachable.
