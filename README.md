@@ -1,257 +1,125 @@
-# Hermes Chat — JetBrains Plugin
+# Hermes Chat — JetBrains 插件
 
-VSCode-Chat-style sidebar that talks to a locally-running
-[Hermes Agent](https://hermes-agent.nousresearch.com) dashboard. Works in
-**Android Studio, IntelliJ IDEA, and every other IntelliJ Platform IDE**.
+**[English](README.en.md)** | 中文
+
+VSCode-Chat 风格的侧边栏, 跟本地运行的
+[Hermes Agent](https://hermes-agent.nousresearch.com) dashboard 对话. 适用于
+**Android Studio, IntelliJ IDEA, 以及所有基于 IntelliJ Platform 的 IDE**.
 
 ```
 ┌─────────────────────────────┐
-│ ● Hermes v0.6.3 — connected │  ← status bar
+│ ● Hermes v0.6.3 — connected │  ← 状态栏
 ├─────────────────────────────┤
 │                             │
-│  [JCEF: dashboard /chat]    │  ← embedded chat surface
+│  [JCEF: dashboard /chat]    │  ← 内嵌聊天面板
 │                             │
 ├─────────────────────────────┤
-│ Model: [claude-opus-4 ▼]    │  ← footer toolbar
+│ Model: [claude-opus-4 ▼]    │  ← 底部工具栏
 └─────────────────────────────┘
 ```
 
-## Why this exists
+> 完整英文文档: [README.en.md](README.en.md) (WSL 配置、build / install 详细步骤、roadmap)
 
-Android Studio bundles its own AI assistant, but it's a thin LLM wrapper
-without the things developers actually want:
+## 这是什么?
 
-| Capability | Android Studio AI | Hermes Agent |
+Hermes Chat 是**薄薄一层 IDE 外壳** — 所有智能 (LLM 对话、skills、memory、cron、subagent)
+都在 [Hermes Agent 主项目](https://hermes-agent.nousresearch.com) 里. 插件做的事只有一件:
+把 dashboard 的聊天界面嵌进 IDE 右栏, 让你在 IDE 里直接跟 Hermes 对话, 不必切终端.
+
+## 跟 IDE 自带 AI 比起来?
+
+| 能力 | Android Studio AI | Hermes Agent |
 |---|---|---|
-| Cross-session memory | ❌ per-project only | ✅ persistent, searchable |
-| Skills / custom tools | ❌ | ✅ `~/.hermes/skills/` |
-| Autonomous subagents | ❌ | ✅ `delegate_task` |
-| Scheduled cron jobs | ❌ | ✅ `hermes cron` |
-| Multiple LLM providers | ⚠️ limited | ✅ any model, any provider |
+| 跨 session 记忆 | ❌ 每个项目独立 | ✅ 持久化, 可搜索 |
+| 自定义 skills | ❌ | ✅ `~/.hermes/skills/` |
+| 自主 subagent | ❌ | ✅ `delegate_task` |
+| 定时任务 (cron) | ❌ | ✅ `hermes cron` |
+| 多 LLM provider | ⚠️ 有限 | ✅ 任何模型, 任何 provider |
 | Telegram/Discord bridge | ❌ | ✅ |
-| Skills from community hub | ❌ | ✅ `hermes skills install` |
+| 社区 skill hub | ❌ | ✅ `hermes skills install` |
 
-This plugin is the IDE shell — all the intelligence stays in Hermes.
+## 安装
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────┐
-│  Android Studio / IntelliJ IDEA             │
-│  ┌───────────────────────────────────────┐  │
-│  │  Hermes Chat toolwindow               │  │
-│  │  ┌─────────────────────────────────┐  │  │
-│  │  │  JCEF browser hosting           │  │  │
-│  │  │  http://127.0.0.1:9119/chat     │  │  │
-│  │  └─────────────────────────────────┘  │  │
-│  │  ▲  REST (Bearer *** * HermesClient.kt │  │  │
-│  └────│───────────────────────────────────┘  │
-└──────│────────────────────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────────────────┐
-│  Hermes Dashboard (FastAPI, port 9119)      │
-│  - SPA: React + xterm.js chat surface       │
-│  - REST: /api/status, /api/sessions, ...    │
-│  - WS: /api/pty, /api/ws, /api/pub          │
-└─────────────────────────────────────────────┘
-       │
-       ▼
-┌─────────────────────────────────────────────┐
-│  Hermes CLI / Agent                         │
-│  - skills, memory, cron, run_agent          │
-└─────────────────────────────────────────────┘
-```
-
-The plugin never speaks to an LLM directly. Every message you send goes
-through Hermes' `run_agent` path, which means:
-
-- Skills load automatically based on your query
-- Memory persists across IDE restarts
-- Subagents can be spawned mid-conversation
-- Cron jobs, approvals, and skill usage all work the same as the CLI
-
-## Module structure
-
-```
-clients/jetbrains/
-├── build.gradle.kts              # IntelliJ Platform Gradle 2.x
-├── settings.gradle.kts
-├── gradle.properties
-├── src/main/
-│   ├── kotlin/com/hermes/agent/jetbrains/
-│   │   ├── HermesChatStartupActivity.kt    # post-open dashboard probe
-│   │   ├── client/
-│   │   │   ├── HermesClient.kt             # PersistentStateComponent + facade
-│   │   │   └── HermesRestClient.kt         # JDK HttpClient, manual JSON
-│   │   ├── model/
-│   │   │   └── HermesStatus.kt             # HermesStatus, ModelOption, Session
-│   │   ├── settings/
-│   │   │   └── HermesChatConfigurable.kt   # Preferences UI
-│   │   └── ui/
-│   │       ├── HermesChatToolWindowFactory.kt   # VSCode Chat layout
-│   │       ├── HermesIcons.kt
-│   │       └── ToggleHermesChatAction.kt
-│   └── resources/
-│       ├── META-INF/plugin.xml
-│       ├── icons/hermesChat{,_16}.svg
-│       └── messages/HermesChatBundle.properties
-└── README.md
-```
-
-## Build & install
+### 方式 1: 从源码 build (推荐, 最新)
 
 ```bash
 cd clients/jetbrains
-./gradlew buildPlugin         # produces release/hermes-chat-0.1.0.zip
+./gradlew buildPlugin
+# 产物: build/distributions/hermes-chat-*.zip
 ```
 
-Install in any JetBrains IDE:
-1. Settings → Plugins → ⚙ → Install Plugin from Disk…
-2. Select the ZIP from `release/`
-3. Restart the IDE
+把这个 ZIP 装到 IDE: `Settings → Plugins → ⚙ → Install Plugin from Disk…`,
+然后重启 IDE.
 
-Or for live development:
+### 方式 2: live development
 
 ```bash
-./gradlew runIde               # launches a sandbox IntelliJ with the plugin
+./gradlew runIde
+# 起一个沙箱 IntelliJ, 插件直接生效, 改代码 → 自动重载
 ```
 
-The default `runIde` target uses IntelliJ IDEA Community. To test against
-Android Studio, pass `-PandroidStudioPath=/path/to/android-studio`.
+需要 JDK 21. Android Studio Panda4 自带, 其他 IDE 装 Temurin 21.
 
-## Configuration
+## 配置
 
-1. Start the Hermes dashboard in a terminal: `hermes dashboard`
-2. Copy the session token from the dashboard's startup log
-3. In the IDE: Settings → Tools → Hermes Chat
-   - Endpoint: `http://127.0.0.1:9119` (default)
-   - Session token: paste from dashboard log
-   - Default model: pick from dropdown
-4. Click **Test connection** to verify
+1. 终端起 dashboard: `hermes dashboard`
+2. 复制启动 log 里的 session token
+3. IDE: `Settings → Tools → Hermes Chat`
+   - **Endpoint**: `http://127.0.0.1:9119` (默认)
+   - **Session token**: 粘贴上一步的 token
+   - **Default model**: 从下拉选
+4. 点 **Test connection** 验证
 
-The token is shared between the dashboard process and the plugin. Both
-sides must agree on it. If you start the dashboard with an explicit
-token (`HERMES_DASHBOARD_SESSION_TOKEN=<token> hermes dashboard`), paste
-that same value into the plugin settings.
+## ⚠️ WSL 用户 — 装之前先看这个
 
-## ⚠️ WSL 2 users — read this before configuring
+**WSL 2 跑在自己的 Hyper-V 虚拟机里, 内部的 `127.0.0.1` 跟 Windows 看到的不是同一个.**
+如果你的 `hermes dashboard` 跑在 WSL, 但 IDE 在 Windows 侧, 直接连 `127.0.0.1` 会**静默失败
+("unreachable")**.
 
-WSL 2 runs in its own Hyper-V VM, so the `127.0.0.1` inside WSL is
-**not** the `127.0.0.1` that Windows / Android Studio sees. If you start
-`hermes dashboard` in WSL and try to connect from a Windows-side IDE
-without doing one of the two things below, the endpoint will silently
-fail with "unreachable".
-
-Pick **one** of the following. Both are stable; the difference is which
-side does the bridging.
-
-### Option A — Tell Hermes to listen on `0.0.0.0`
-
-Bind the dashboard to all interfaces inside WSL, then point the plugin
-at WSL's eth0 IP:
-
-```bash
-# Inside WSL
-hermes dashboard --host 0.0.0.0 --port 9119 --insecure
-```
-
-```bash
-# Inside WSL — grab the IP you must use from Windows
-hostname -I | awk '{print $1}'
-# → e.g. 172.24.32.105
-```
-
-In Android Studio → Settings → Tools → Hermes Chat:
-- **Endpoint**: `http://172.24.32.105:9119` (use the IP from above)
-- **Token**: the one the dashboard printed at startup
-
-⚠️ WSL's eth0 IP can change on every WSL restart. If your IDE suddenly
-stops connecting, re-run `hostname -I` and update the endpoint. To pin
-the IP, add this to `/etc/wsl.conf` inside WSL (then `wsl --shutdown`
-from PowerShell):
-
-```ini
-[network]
-generateHosts = true
-generateResolvConf = true
-```
-
-…and create a Windows Task Scheduler entry that runs on logon to (1)
-start Hermes with `--host 0.0.0.0` and (2) write its current IP into a
-file the plugin can read. The plugin's endpoint field is a plain
-string, so a tiny wrapper that reads the file works fine — but most
-users don't need this; just re-check the IP when it breaks.
-
-### Option B — Windows portproxy to WSL (no Hermes flag change)
-
-Forward Windows `127.0.0.1:9119` into the WSL VM. The plugin keeps
-using the default `http://127.0.0.1:9119` endpoint.
-
-Run **once** in an **elevated PowerShell**:
+**最简方案 (适合 95% 用户)** — Windows portproxy 到 WSL, IDE 端用 `127.0.0.1`:
 
 ```powershell
+# 一次性, 管理员 PowerShell
 $wslIp = (wsl hostname -I).Trim().Split()[0]
 netsh interface portproxy add v4tov4 `
     listenaddress=127.0.0.1 listenport=9119 `
     connectaddress=$wslIp connectport=9119
-
-# Allow the port through the Windows firewall
 New-NetFirewallRule -DisplayName "Hermes Dashboard (WSL)" `
     -Direction Inbound -LocalPort 9119 -Protocol TCP -Action Allow
 ```
 
-Then start Hermes in WSL **without** any special flags:
-
 ```bash
+# WSL 里正常起
 hermes dashboard
 ```
 
-In Android Studio → Settings → Tools → Hermes Chat:
-- **Endpoint**: `http://127.0.0.1:9119` (default — Windows-side loopback)
-- **Token**: as printed
+IDE Settings 里 endpoint 保持默认 `http://127.0.0.1:9119`. WSL 重启后如果连不上,
+重跑上面的 PowerShell (WSL IP 可能变了). 详细对比 + 备选方案看
+[README.en.md § WSL](README.en.md#-wsl-2-users--read-this-before-configuring).
 
-⚠️ WSL IP can change on restart, which silently breaks the proxy. To
-fix after a restart, just re-run the PowerShell snippet above. Save it
-as `~\setup-hermes-portproxy.ps1` and run it whenever Hermes won't
-connect.
-
-### Which option should I pick?
-
-|  | Option A (`0.0.0.0`) | Option B (portproxy) |
-|---|---|---|
-| Plugin endpoint | WSL IP (changes) | `127.0.0.1` (stable) |
-| Hermes flags | `--host 0.0.0.0 --insecure` | none |
-| Admin PowerShell needed | ❌ no | ✅ yes (one-time) |
-| Survives WSL restart | ⚠️ IP may change | ⚠️ proxy rule may need rerun |
-| Works on Win10 21H2 | ✅ | ✅ |
-| Works on Win11 22H2+ | ✅ + `wsl.localhost` shortcut | ✅ |
-
-**Most users: pick Option B.** The "endpoint never changes" property is
-worth the one-time PowerShell setup, and `wsl.localhost` (Win11 22H2+)
-gives you an alternative if the IP changes.
-
-If you also want the dashboard accessible from your phone on the same
-LAN, Option A is more flexible — but that's a v0.2.0 concern, not
-M1.
-
-## Roadmap
-
-| Milestone | Status | Description |
-|---|---|---|
-| **M1** — VSCode Chat sidebar | ✅ shipped | ToolWindow + JCEF + status bar + model picker |
-| **M2** — Code context | planned | Right-click → send selection/file as context |
-| **M3** — Multi-session | planned | Recent conversations dropdown in header |
-| **M4** — Multimodal | planned | Screenshot paste, image attach |
-| **M5** — Approval UI | planned | Render permission requests from Hermes inside the IDE |
-
-## Compatibility
+## 兼容性
 
 - IntelliJ IDEA 2024.2 → 2025.2
 - Android Studio Koala (2024.1.1) → Meerkat (2025.x)
 - JetBrains Runtime 21+
-- Hermes Agent 0.6.0+ (the dashboard SPA is the source of truth for chat)
+- Hermes Agent 0.6.0+ (dashboard SPA 是聊天的"真相源")
+
+## 贡献
+
+想贡献? 看 [CONTRIBUTING.md](CONTRIBUTING.md) (中文) /
+[CONTRIBUTING.en.md](CONTRIBUTING.en.md) (English). 简版:
+
+1. Fork → 克隆 → 建分支
+2. `./gradlew test --offline` + `./gradlew runIde` 验证
+3. 改代码 + 加测试 (没测试的 PR 不收)
+4. 更新 `CHANGELOG.md` `[Unreleased]` 段
+5. 提 PR, 模板会自动加载
+
+## 安全
+
+发现安全漏洞? **不要**开 public issue. 看 [SECURITY.md](SECURITY.md) 走私密报告
+流程.
 
 ## License
 
-Apache 2.0 (matches the parent hermes-agent repo).
+[Apache-2.0](LICENSE). Copyright 2024-2026 Hermes Agent.
