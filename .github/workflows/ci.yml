@@ -1,0 +1,93 @@
+# CI for Hermes Chat (JetBrains Plugin)
+#
+# 跑 ./gradlew test + buildPlugin + verifyPlugin 验证 PR 不会破坏构建.
+# 触发: push 到 main + 任何 PR.
+#
+# 重要:
+# - 第一次 push 这个 workflow, CI 会下载 Gradle 依赖 (~500MB, 几分钟).
+#   cache 没填满之前不要加 --offline, 否则会失败.
+# - cache 填满后, 后续 PR 通常 < 1 分钟跑完 (test) + < 1 分钟 (build) + 30s (verify).
+# - 失败时 artifact 会保留 build/reports/ + idea.log (测试报告 + IDE 日志).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:        # 允许手动从 GitHub Actions 面板触发
+
+# 同一个 PR 上多次 push 取消上一次 in-flight run, 省 CI 分钟.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-and-build:
+    name: gradle test + buildPlugin + verifyPlugin
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle    # 复用本地的 ~/.gradle 缓存; 真正的 cache 由下一步 setup-gradle 管
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          # 用项目自带的 wrapper (gradlew) 而非 action 自己的 Gradle, 这样 .gradle/9.0.0
+          # 这类项目特定版本能正确加载.
+          gradle-version: wrapper
+
+      - name: Run unit tests
+        # --no-daemon 防止 Gradle daemon 在 CI runner 间残留进程
+        run: ./gradlew test --no-daemon
+
+      - name: Build plugin ZIP
+        # 构建可分发 ZIP, artifact 给 reviewer 下手装试
+        run: ./gradlew buildPlugin --no-daemon
+
+      - name: Verify plugin (Marketplace compatibility)
+        # 跑 IntelliJ 官方的 plugin-verifier, 检查 plugin.xml / ID / deps 跟
+        # 目标 IDE 版本的兼容性. 就算不准备发 Marketplace, 这个 task 也能抓住
+        # 未来 API 弃用 / 缺失依赖等会发布后爆雷的问题.
+        run: ./gradlew verifyPlugin --no-daemon
+        continue-on-error: false   # verifyPlugin 失败 = 真问题, 不容忍
+
+      - name: Upload plugin ZIP
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-chat-jetbrains-${{ github.sha }}
+          path: build/distributions/*.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ github.sha }}
+          path: |
+            build/reports/tests/
+            build/reports/verifyPlugin/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload IDE log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: idea-log-${{ github.sha }}
+          path: |
+            ~/.cache/JetBrains/**/idea.log
+            ~/.config/JetBrains/**/idea.log
+          if-no-files-found: ignore
+          retention-days: 7
