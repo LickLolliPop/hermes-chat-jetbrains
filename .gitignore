@@ -98,3 +98,16 @@ logs/
 # trick to avoid WSL->cmd quoting issues)
 # =====================================================
 .msg-*.txt
+
+# =====================================================
+# WSL DrvFS orphan files
+# When the IntelliJ :test task writes to user.home=%TEMP% under WSL,
+# files leak into the project root with absolute Windows paths
+# (e.g. `C:\Users\ADMINI~1\AppData\Local\Temp\mac-linux-strategy-home*`).
+# These appear as untracked files in `git status` and clutter `ls`.
+# Field-tested 2026-07-01 — see skill reference wsl-test-temp-orphan-cleanup.md.
+# =====================================================
+# Anything that starts with a Windows drive letter and a colon
+# (c:\, C:\, d:\, etc.) at the root of the repo.
+/[A-Za-z]:\*
+/[A-Za-z]:/**
