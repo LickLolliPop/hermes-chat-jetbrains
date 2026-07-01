@@ -2,6 +2,7 @@ package com.hermes.agent.jetbrains.settings
 
 import com.hermes.agent.jetbrains.client.HermesClient
 import com.hermes.agent.jetbrains.dashboard.DashboardProcessManager
+import com.hermes.agent.jetbrains.dashboard.WslDetector
 import com.hermes.agent.jetbrains.model.HermesModelList
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.options.ConfigurationException
@@ -57,6 +58,32 @@ class HermesChatConfigurable : Configurable {
             "still connect to it as a client."
     }
     /**
+     * Windows-only: "Use WSL for dashboard" toggle. Hidden entirely
+     * when WSL is not installed on the host — we don't want to show
+     * the user an option they can't actually use. The detector caches
+     * its probe result so opening Settings repeatedly is cheap.
+     *
+     * On non-Windows hosts the detector returns false so the checkbox
+     * stays hidden — the field exists in State regardless, it just
+     * isn't surfaced in the UI.
+     *
+     * On change: only the State is updated. The new value is read on
+     * the next dashboard restart (the tool-window 🔄 button), which
+     * is when [DashboardProcessStrategy.forCurrentOs] actually picks
+     * a strategy. We deliberately don't trigger a restart from
+     * Settings — that would interrupt any in-flight chat session.
+     */
+    private val wslDetector = WslDetector()
+    private val useWslCheckbox = JCheckBox(
+        "Use WSL for dashboard",
+        client.getState().useWsl,
+    ).apply {
+        toolTipText = "On: run the dashboard inside WSL via `wsl.exe bash -lc \"hermes dashboard …\"`. " +
+            "Off: run a native `hermes.exe` from your Windows PATH. " +
+            "Takes effect on the next dashboard restart (🔄 in the tool window)."
+        isVisible = wslDetector.isInstalled()
+    }
+    /**
      * Manual-launch instructions. Hidden by default; shown only when
      * [manageAutomaticallyCheckbox] is unchecked so the user knows how to
      * start the dashboard without the plugin's help.
@@ -98,6 +125,7 @@ class HermesChatConfigurable : Configurable {
             .addComponent(statusLabel, 0)
             .addComponent(manageAutomaticallyCheckbox, 0)
             .addComponent(manualLaunchHint, 0)
+            .addComponent(useWslCheckbox, 0)
             .addComponentFillVertically(JPanel(), 0)
             .panel
             .apply { border = JBUI.Borders.empty(8, 12) }
@@ -107,7 +135,8 @@ class HermesChatConfigurable : Configurable {
         return endpointField.text != client.getState().endpoint ||
             tokenField.text != client.getState().sessionToken ||
             (modelPicker.selectedItem as? String)?.let { extractId(it) } != client.getState().defaultModelId.takeIf { it.isNotEmpty() } ||
-            manageAutomaticallyCheckbox.isSelected != client.getState().manageAutomatically
+            manageAutomaticallyCheckbox.isSelected != client.getState().manageAutomatically ||
+            useWslCheckbox.isSelected != client.getState().useWsl
     }
 
     @Throws(ConfigurationException::class)
@@ -124,6 +153,7 @@ class HermesChatConfigurable : Configurable {
             token = tokenField.text,
             model = modelId,
             manageAutomatically = manageAutomaticallyCheckbox.isSelected,
+            useWsl = useWslCheckbox.isSelected,
         )
     }
 
@@ -141,6 +171,16 @@ class HermesChatConfigurable : Configurable {
         }
         manageAutomaticallyCheckbox.isSelected = client.getState().manageAutomatically
         manualLaunchHint.isVisible = !manageAutomaticallyCheckbox.isSelected
+        useWslCheckbox.isSelected = client.getState().useWsl
+        // We deliberately do NOT re-probe WSL on Settings open:
+        // `wsl.exe --status` takes ~200-500ms, and the cache from the
+        // initial probe is correct unless the user installed WSL
+        // since opening the IDE — in which case restarting the IDE
+        // picks it up. Adding a "Re-detect" button was rejected by
+        // the user: they want a simple toggle, not a settings panel
+        // with maintenance buttons. If the user toggles between
+        // WSL-disabled (not installed) and WSL-enabled, they can
+        // restart the IDE.
     }
 
     private fun runTestConnection() {

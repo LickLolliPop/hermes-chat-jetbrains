@@ -2,6 +2,7 @@ package com.hermes.agent.jetbrains.ui
 
 import com.hermes.agent.jetbrains.client.HermesClient
 import com.hermes.agent.jetbrains.dashboard.DashboardProcessManager
+import com.hermes.agent.jetbrains.dashboard.DashboardProcessStrategy
 import com.hermes.agent.jetbrains.model.HermesStatus
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
@@ -390,7 +391,15 @@ class HermesChatPanel(private val project: Project) : Disposable {
         // feed to the soon-to-be-killed dashboard process is released. The
         // browser is rebuilt once the new dashboard is reachable.
         disposeBrowser()
-        DashboardProcessManager().restartDashboard { result ->
+        // Pick the strategy honouring the user's `useWsl` setting. On
+        // Windows + useWsl=false + WSL installed this returns
+        // WslInstalledButDisabled, which surfaces a clear "WSL is
+        // installed but disabled in settings" error message rather than
+        // silently trying the wrong launcher.
+        val manager = DashboardProcessManager(
+            strategy = DashboardProcessStrategy.forCurrentOs(client.getState().useWsl),
+        )
+        manager.restartDashboard { result ->
             refreshButton.isEnabled = true
             if (result.success) {
                 refreshStatus()

@@ -66,6 +66,34 @@ interface DashboardProcessStrategy {
             pick(System.getProperty("os.name") ?: "")
 
         /**
+         * Variant that honours the user's `useWsl` setting on Windows.
+         *
+         * On macOS / Linux, [useWsl] is ignored: there's no WSL to
+         * toggle, and the native Mac/Linux strategy is the right answer
+         * regardless.
+         *
+         * On Windows the logic is:
+         * - `useWsl=true` (default): [WindowsWslStrategy]. Behaviour
+         *   unchanged from the no-arg overload. If `wsl.exe` is missing
+         *   the strategy surfaces its own clear error.
+         * - `useWsl=false`: [MacLinuxStrategy] (which on Windows looks
+         *   for `hermes.exe` on the user's Windows PATH). Whether or
+         *   not WSL is installed on the host is **irrelevant** — the
+         *   user has explicitly opted out of the WSL path, so we run
+         *   the native launcher. If the native binary is missing the
+         *   strategy surfaces its own clear error ("Cannot find
+         *   hermes on PATH and ~/.local/bin/hermes does not exist").
+         *
+         * The WSL-detector is NOT consulted here. WslDetector is
+         * used only by the Settings panel to decide whether to show
+         * the "Use WSL" checkbox in the first place (your spec:
+         * "未安装就不显示"). Once the user has flipped the toggle,
+         * the strategy picker trusts the intent.
+         */
+        fun forCurrentOs(useWsl: Boolean): DashboardProcessStrategy =
+            pickWithUseWsl(System.getProperty("os.name") ?: "", useWsl)
+
+        /**
          * Pure dispatch: given an `os.name` string (as reported by
          * `System.getProperty("os.name")`), return the strategy that
          * should handle it. Split out so unit tests can verify each
@@ -112,6 +140,26 @@ interface DashboardProcessStrategy {
                 // `wsl.exe` on a system that may not have it.
                 else -> MacLinuxStrategy(isMac = false)
             }
+        }
+
+        /**
+         * Like [pick] but applies the [useWsl] override on Windows.
+         * On Windows + useWsl=false we return the native
+         * [MacLinuxStrategy] unconditionally — the host may or may
+         * not have WSL installed, but the user has opted out of the
+         * WSL path either way, so we run the native launcher. The
+         * strategy's own "hermes not found" error message is the
+         * right escape hatch when the native binary is missing.
+         */
+        fun pickWithUseWsl(osName: String, useWsl: Boolean): DashboardProcessStrategy {
+            val base = pick(osName)
+            // Non-Windows: useWsl is irrelevant. Return the base.
+            if (base !is WindowsWslStrategy) return base
+            // Windows + useWsl=true: same as no-arg pick.
+            if (useWsl) return base
+            // Windows + useWsl=false: native launcher. WSL's presence
+            // is irrelevant — the user said they want native.
+            return MacLinuxStrategy(isMac = false)
         }
     }
 }

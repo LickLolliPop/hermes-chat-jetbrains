@@ -189,6 +189,47 @@ plumbing changes from the user.
 4. Call `HermesClient.getInstance().updateSettings(...)` from anywhere
    that needs to write the value programmatically
 
+### Platform support matrix
+
+| Host OS  | Default strategy | Override available? |
+|----------|------------------|---------------------|
+| Windows  | `WindowsWslStrategy` (runs dashboard inside WSL) | Yes — toggle "Use WSL for dashboard" in Settings. Honoured by `DashboardProcessStrategy.forCurrentOs(useWsl)`. |
+| macOS    | `MacLinuxStrategy(isMac = true)` (native, `nohup`) | No — `useWsl` ignored |
+| Linux    | `MacLinuxStrategy(isMac = false)` (native, `nohup`) | No — `useWsl` ignored |
+
+**Windows `useWsl` semantics** (v0.2.0):
+
+- `useWsl=true` (default): WSL strategy, unchanged from v0.1.x.
+- `useWsl=false`: native strategy, regardless of whether WSL is
+  installed on the host. The user has explicitly opted out of the
+  WSL path, so we trust that intent and run the native launcher.
+  If `hermes.exe` is missing on the Windows PATH the native
+  strategy surfaces its own "Cannot find hermes on PATH" fatal
+  Result.
+
+Earlier drafts tried to refuse the native fallback when WSL was
+installed (a "WSL is installed but disabled" placeholder strategy).
+User feedback rejected that: it's paternalistic — if the user
+flipped the toggle to native, they want native, full stop. The
+native strategy's "hermes not found" error is the right signal.
+
+The Settings panel hides the "Use WSL for dashboard" checkbox when
+WSL is not detected. The detector is NOT consulted at strategy-pick
+time — once the user has flipped the toggle, the picker trusts the
+intent. On macOS/Linux the field is never shown in the UI (it's
+persisted in State for the cross-OS move case but doesn't surface
+there).
+
+**When does the toggle take effect?** The state is updated on
+Settings → Apply. The new value is read the next time the user
+clicks the tool-window 🔄 button (which calls
+`DashboardProcessManager(...).restartDashboard { ... }`). The
+toggle does NOT trigger an immediate restart from the Settings
+panel — that would interrupt any in-flight chat session. The
+detector is probed once at `HermesChatConfigurable` construction;
+re-probing requires an IDE restart (no "Re-detect" button by
+design — keep the settings panel simple).
+
 ### Adding a new platform strategy
 1. Implement `DashboardProcessStrategy` (the four methods: `restart`,
    `isRunning`, `homeDir`).

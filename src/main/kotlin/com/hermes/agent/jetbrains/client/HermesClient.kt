@@ -38,6 +38,18 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
         var sessionToken: String = "",
         var defaultModelId: String = "",
         /**
+         * When running on Windows, route the dashboard process through
+         * WSL. Defaults to true to preserve v0.1.x behaviour for users
+         * upgrading. Users who have a Windows-native `hermes.exe` on
+         * PATH can flip this off (the Settings checkbox hides itself
+         * entirely if WSL is not installed — see [WslDetector]).
+         *
+         * On macOS / Linux this field is ignored: there's no WSL to
+         * toggle. Stored anyway so a Mac user moving their config to
+         * a Windows machine keeps their last choice.
+         */
+        var useWsl: Boolean = true,
+        /**
          * If true (default), the plugin spawns and restarts the Hermes
          * dashboard process automatically via DashboardProcessManager.
          * If false, the plugin only consumes an already-running dashboard
@@ -102,6 +114,7 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
         token: String? = null,
         model: String? = null,
         manageAutomatically: Boolean? = null,
+        useWsl: Boolean? = null,
     ) {
         val current = stateRef.get()
         stateRef.set(current.copy(
@@ -109,6 +122,7 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
             sessionToken = token ?: current.sessionToken,
             defaultModelId = model ?: current.defaultModelId,
             manageAutomatically = manageAutomatically ?: current.manageAutomatically,
+            useWsl = useWsl ?: current.useWsl,
         ))
         // Endpoint change invalidates the cached auto-token. The next
         // resolveToken() call will re-fetch against the new endpoint.
