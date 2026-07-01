@@ -110,6 +110,21 @@ logs/
 gradle.local.properties
 
 # =====================================================
+# Screenshot source files
+# Only the final exported PNG/JPG should be committed to
+# docs/screenshots/. Source files (Photoshop, Sketch, Figma
+# exports, large TIFFs) are regeneratable and bloat the repo.
+# =====================================================
+docs/screenshots/*.psd
+docs/screenshots/*.psb
+docs/screenshots/*.sketch
+docs/screenshots/*.fig
+docs/screenshots/*.ai
+docs/screenshots/*.tif
+docs/screenshots/*.tiff
+docs/screenshots/*.xcf
+
+# =====================================================
 # WSL DrvFS orphan files
 # When the IntelliJ :test task writes to user.home=%TEMP% under WSL,
 # files leak into the project root with absolute Windows paths

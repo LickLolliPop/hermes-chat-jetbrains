@@ -18,6 +18,11 @@ VSCode-Chat 风格的侧边栏, 跟本地运行的
 └─────────────────────────────┘
 ```
 
+![Hermes Chat 主界面](docs/screenshots/01-main.png)
+
+*Android Studio Panda4 上运行中的 Hermes Chat — 右侧侧栏, 状态条显示 "connected",
+Chat 面板嵌入了 JCEF 浏览器, footer 是模型选择器.*
+
 > 完整英文文档: [README.en.md](README.en.md) (WSL 配置、build / install 详细步骤、roadmap)
 
 ## 这是什么?

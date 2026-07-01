@@ -18,6 +18,12 @@ VSCode-Chat-style sidebar that talks to a locally-running
 └─────────────────────────────┘
 ```
 
+![Hermes Chat in action](docs/screenshots/01-main.png)
+
+*Hermes Chat running inside Android Studio Panda4 — right-side tool window
+with a "connected" status bar, the JCEF-embedded chat surface in the
+center, and the model picker in the footer.*
+
 ## Why this exists
 
 Android Studio bundles its own AI assistant, but it's a thin LLM wrapper
