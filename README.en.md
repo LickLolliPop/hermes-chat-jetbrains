@@ -73,6 +73,13 @@ through Hermes' `run_agent` path, which means:
 - Subagents can be spawned mid-conversation
 - Cron jobs, approvals, and skill usage all work the same as the CLI
 
+> **Project ownership**: this repository is maintained by `LickLolliPop`
+> as an independent community project — **not** an official plugin by
+> Nous Research. Backend capabilities, bug reports, and feature requests
+> should go to the [main hermes-agent project](https://hermes-agent.nousresearch.com).
+> This repository is responsible only for the IDE-side tool window and
+> configuration integration.
+
 ## Module structure
 
 ```

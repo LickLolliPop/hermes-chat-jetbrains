@@ -26,6 +26,11 @@ Hermes Chat 是**薄薄一层 IDE 外壳** — 所有智能 (LLM 对话、skills
 都在 [Hermes Agent 主项目](https://hermes-agent.nousresearch.com) 里. 插件做的事只有一件:
 把 dashboard 的聊天界面嵌进 IDE 右栏, 让你在 IDE 里直接跟 Hermes 对话, 不必切终端.
 
+> **关于项目归属**: 本仓库由个人维护者 `LickLolliPop` 维护, 是独立社区项目,
+> **不是** Nous Research 官方出品的 Hermes Agent 插件. 后端能力、bug 报告、
+> 功能需求请优先到 [hermes-agent 主项目](https://hermes-agent.nousresearch.com).
+> 本仓库只负责 IDE 侧的工具窗口和配置集成.
+
 ## 跟 IDE 自带 AI 比起来?
 
 | 能力 | Android Studio AI | Hermes Agent |
