@@ -139,4 +139,106 @@ class DashboardProcessStrategyFactoryTest {
         // changes forCurrentOs() to return null for unknown OS).
         assertTrue(actual is DashboardProcessStrategy)
     }
+
+    // -- pickWithUseWsl ------------------------------------------------
+    //
+    // The v0.2.0 settings checkbox (useWsl) only affects Windows hosts.
+    // On macOS/Linux the setting is stored in State but ignored at the
+    // strategy level. These tests pin the two Windows cases (useWsl=true
+    // → WSL strategy, useWsl=false → native strategy) plus the
+    // cross-OS "useWsl is ignored" contract.
+    //
+    // Earlier draft tried to make pickWithUseWsl refuse native fallback
+    // when WSL was installed (a "WslInstalledButDisabled" placeholder
+    // strategy). User feedback: that's paternalistic — if the user
+    // flipped the toggle to native, they want native, full stop. The
+    // native strategy's "hermes not found on PATH" error is the right
+    // signal. These tests pin the simpler, trust-the-user semantics.
+
+    @Test
+    fun `pickWithUseWsl on Windows with useWsl=true returns WindowsWslStrategy`() {
+        // The default path — WSL strategy, unchanged from the no-arg
+        // overload.
+        val strategy = DashboardProcessStrategy.pickWithUseWsl(
+            osName = "Windows 11",
+            useWsl = true,
+        )
+        assertIs<WindowsWslStrategy>(
+            strategy,
+            "useWsl=true must pick WindowsWslStrategy on Windows",
+        )
+        assertEquals("WSL", strategy.osLabel)
+    }
+
+    @Test
+    fun `pickWithUseWsl on Windows with useWsl=false returns MacLinuxStrategy (native)`() {
+        // User has flipped the WSL toggle off — they want to run the
+        // dashboard via a native `hermes.exe` on their Windows PATH.
+        // Whether or not WSL is installed on the host is irrelevant:
+        // the strategy picker trusts the user's intent. If the native
+        // binary is missing the strategy surfaces its own "hermes not
+        // found" error, which is the right escape hatch.
+        //
+        // The Linux-flavoured MacLinuxStrategy is reused because its
+        // process-spawning code (setsid + nohup) and port probe (ss /
+        // lsof) are POSIX-portable; on Windows it runs against the
+        // user's Windows shell via bash.exe (Git Bash / WSL interop),
+        // which is how the existing v0.1.x build path for native
+        // users has always worked.
+        val strategy = DashboardProcessStrategy.pickWithUseWsl(
+            osName = "Windows 11",
+            useWsl = false,
+        )
+        assertIs<MacLinuxStrategy>(
+            strategy,
+            "Windows + useWsl=false must return MacLinuxStrategy (native) regardless of WSL presence",
+        )
+        assertEquals(
+            "Linux", strategy.osLabel,
+            "Windows-native fallback uses the Linux-labelled strategy (POSIX-portable launcher)",
+        )
+    }
+
+    @Test
+    fun `pickWithUseWsl on macOS ignores useWsl and returns MacLinuxStrategy isMac=true`() {
+        // macOS hosts: no WSL exists. The useWsl toggle is hidden in
+        // the UI (WslDetector returns false on non-Windows), but if
+        // a user with a cross-OS config somehow sets it via the XML
+        // file, the picker must ignore it.
+        for (useWsl in listOf(true, false)) {
+            val strategy = DashboardProcessStrategy.pickWithUseWsl(
+                osName = "Mac OS X",
+                useWsl = useWsl,
+            )
+            assertIs<MacLinuxStrategy>(
+                strategy,
+                "macOS must always pick MacLinuxStrategy regardless of useWsl (useWsl=$useWsl)",
+            )
+            assertEquals(
+                "macOS", strategy.osLabel,
+                "macOS-dispatched strategy must label itself 'macOS'",
+            )
+        }
+    }
+
+    @Test
+    fun `pickWithUseWsl on Linux ignores useWsl and returns MacLinuxStrategy isMac=false`() {
+        // Same as the macOS case but for Linux. Pin both branches so
+        // a future refactor can't quietly make the picker OS-sensitive
+        // when the user has useWsl=false in their XML.
+        for (useWsl in listOf(true, false)) {
+            val strategy = DashboardProcessStrategy.pickWithUseWsl(
+                osName = "Linux",
+                useWsl = useWsl,
+            )
+            assertIs<MacLinuxStrategy>(
+                strategy,
+                "Linux must always pick MacLinuxStrategy regardless of useWsl (useWsl=$useWsl)",
+            )
+            assertEquals(
+                "Linux", strategy.osLabel,
+                "Linux-dispatched strategy must label itself 'Linux'",
+            )
+        }
+    }
 }
