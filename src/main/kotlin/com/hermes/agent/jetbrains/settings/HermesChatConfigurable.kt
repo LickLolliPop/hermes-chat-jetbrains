@@ -1,7 +1,7 @@
 package com.hermes.agent.jetbrains.settings
 
 import com.hermes.agent.jetbrains.client.HermesClient
-import com.hermes.agent.jetbrains.model.HermesModelOption
+import com.hermes.agent.jetbrains.model.HermesModelList
 import com.intellij.openapi.options.Configurable
 import com.intellij.openapi.options.ConfigurationException
 import com.intellij.openapi.ui.ComboBox
@@ -114,10 +114,19 @@ class HermesChatConfigurable : Configurable {
                 if (status != null) {
                     statusLabel.text = "Connected to Hermes ${status.version}"
                     // Also fetch models so the dropdown reflects what's actually available.
-                    client.fetchModelsAsync { models: List<HermesModelOption> ->
-                        if (models.isNotEmpty()) {
+                    client.fetchModelsAsync { modelList: HermesModelList ->
+                        if (modelList.options.isNotEmpty()) {
                             modelPicker.removeAllItems()
-                            for (m in models) modelPicker.addItem("${m.label} (${m.id})")
+                            var selectedIdx = 0
+                            for ((idx, m) in modelList.options.withIndex()) {
+                                modelPicker.addItem("${m.label} (${m.id})")
+                                // Pre-select the dashboard's currently-active
+                                // model so the user sees what's actually running.
+                                if (modelList.currentModelId != null && m.id == modelList.currentModelId) {
+                                    selectedIdx = idx
+                                }
+                            }
+                            modelPicker.selectedIndex = selectedIdx
                         }
                     }
                 } else {

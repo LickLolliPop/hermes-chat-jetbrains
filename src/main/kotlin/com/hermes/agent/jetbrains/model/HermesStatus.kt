@@ -42,6 +42,20 @@ data class HermesModelOption(
 )
 
 /**
+ * Carries both the selectable model list and the model's current default
+ * (the "currently active model" hint that the dashboard bakes into the
+ * end of `/api/model/options` as top-level `model` + `provider` fields).
+ *
+ * The IDE tool window uses `currentModelId` to pre-select the picker
+ * so users see what's already running — not whatever happens to sort
+ * first in the model list.
+ */
+data class HermesModelList(
+    val options: List<HermesModelOption>,
+    val currentModelId: String?,
+)
+
+/**
  * What the IDE shell needs to know about a chat session — just enough to
  * power the "Recent conversations" list in the toolwindow header. The
  * actual message history is owned by the embedded dashboard SPA and does

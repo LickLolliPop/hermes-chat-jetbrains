@@ -144,6 +144,23 @@ class HermesChatPanel(private val project: Project) {
             // Make sure we have a session token before any authenticated
             // call. The first probe gets a chance to scrape the index.html;
             // subsequent probes short-circuit (see HermesClient.ensureToken).
+            //
+            // Bug fix: reachable=true does NOT guarantee that the session
+            // token has been auto-fetched yet. /api/status is public, so it
+            // can succeed on the very first tick while DashboardTokenFetcher
+            // (which runs on the same pooled thread right above) is still
+            // racing on a separate connection or has just timed out. If we
+            // dispatch fetchModelsAsync() in that window, /api/model/options
+            // returns 401, the client returns an empty list, and
+            // footer.setModels() resets the picker to "(no models available)"
+            // and disables it. Even though the next tick (8s later) will
+            // successfully auto-fetch the token and get a real list, the
+            // user sees a broken picker for those 8 seconds — and in some
+            // sandbox paths the token fetch never recovers.
+            //
+            // Fix: only kick off the authenticated model fetch when there's
+            // actually a token to send. Otherwise log and let the next tick
+            // (which will re-enter ensureToken first) handle it.
             log.info("refreshStatus: tick (autoToken=${client.hasAutoToken()}, endpoint=${client.getState().endpoint})")
             client.ensureToken()
             val reachable = client.isReachable()
@@ -157,9 +174,16 @@ class HermesChatPanel(private val project: Project) {
                         log.info("refreshStatus: fetchStatus returned version=${status?.version}")
                         renderStatus(status)
                     }
-                    client.fetchModelsAsync { models ->
-                        log.info("refreshStatus: fetchModels returned ${models.size} models")
-                        footer.setModels(models)
+                    if (client.hasAutoToken() || client.getState().sessionToken.isNotBlank()) {
+                        client.fetchModelsAsync { modelList ->
+                            log.info(
+                                "refreshStatus: fetchModels returned ${modelList.options.size} models " +
+                                    "(currentModelId=${modelList.currentModelId})"
+                            )
+                            footer.setModels(modelList.options, modelList.currentModelId)
+                        }
+                    } else {
+                        log.info("refreshStatus: reachable but no token yet — deferring model fetch to next tick")
                     }
                     // If the browser hasn't been initialized yet, do it now —
                     // we know the dashboard is up so loading /chat will work.
@@ -323,7 +347,10 @@ private class FooterPanel {
 
     val component: JComponent get() = panel
 
-    fun setModels(models: List<com.hermes.agent.jetbrains.model.HermesModelOption>) {
+    fun setModels(
+        models: List<com.hermes.agent.jetbrains.model.HermesModelOption>,
+        currentModelId: String? = null,
+    ) {
         // Always reset the dropdown so we don't leave a stale
         // "(no models yet)" placeholder when an empty list comes back
         // from the dashboard (e.g. provider not configured).
@@ -334,11 +361,20 @@ private class FooterPanel {
             return
         }
         modelPicker.isEnabled = true
-        for (m in models) {
+        var selectedIdx = 0
+        for ((idx, m) in models.withIndex()) {
             // We display "label (id)" so the picker shows a human-readable
             // name but the action listener still receives the real model id.
             modelPicker.addItem("${m.label} (${m.id})")
+            // Pre-select the dashboard's currently-active model so the
+            // user lands on whatever is actually running, not whatever
+            // happened to sort first in the providers[] array. If no
+            // match is found the picker defaults to index 0.
+            if (currentModelId != null && m.id == currentModelId) {
+                selectedIdx = idx
+            }
         }
+        modelPicker.selectedIndex = selectedIdx
     }
 
     private fun extractIdFromLabel(label: String): String? {

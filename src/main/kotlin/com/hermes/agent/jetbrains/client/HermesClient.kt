@@ -1,6 +1,6 @@
 package com.hermes.agent.jetbrains.client
 
-import com.hermes.agent.jetbrains.model.HermesModelOption
+import com.hermes.agent.jetbrains.model.HermesModelList
 import com.hermes.agent.jetbrains.model.HermesSessionSummary
 import com.hermes.agent.jetbrains.model.HermesStatus
 import com.intellij.openapi.components.PersistentStateComponent
@@ -110,7 +110,7 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
         }
     }
 
-    fun fetchModelsAsync(uiCallback: (List<HermesModelOption>) -> Unit) {
+    fun fetchModelsAsync(uiCallback: (HermesModelList) -> Unit) {
         AppExecutorUtil.getAppExecutorService().execute {
             val list = restClient.listModels()
             com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
@@ -159,11 +159,32 @@ class HermesClient : PersistentStateComponent<HermesClient.State> {
         if (autoToken != null) return true
         if (autoTokenAttempted) return false
         autoTokenAttempted = true
-        val fetched = tokenFetcher.fetchToken()
+        val fetched = try {
+            tokenFetcher.fetchToken()
+        } catch (t: Throwable) {
+            // tokenFetcher.fetchToken() already swallows its own exceptions
+            // and returns null, so reaching this catch is unexpected. Log
+            // loudly so a sandbox failure shows up in idea.log at WARN
+            // (previous debug-level message was invisible by default).
+            com.intellij.openapi.diagnostic.logger<HermesClient>().warn(
+                "tokenFetcher.fetchToken() threw unexpectedly", t
+            )
+            null
+        }
         if (fetched != null) {
             autoToken = fetched
             com.intellij.openapi.diagnostic.logger<HermesClient>().info(
                 "Auto-fetched dashboard session token (${fetched.length} chars)"
+            )
+        } else {
+            // Sandbox-diagnostics: distinguish "fetched" returning null
+            // (HTML missing __HERMES_SESSION_TOKEN__) from "fetch threw"
+            // (network unreachable, etc). tokenFetcher logs at debug so
+            // this WARN line surfaces in idea.log without changing the
+            // existing call-site contract.
+            com.intellij.openapi.diagnostic.logger<HermesClient>().warn(
+                "ensureToken: could not obtain dashboard session token — " +
+                    "model fetch will be deferred until token becomes available"
             )
         }
         return autoToken != null
