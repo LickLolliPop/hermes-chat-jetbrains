@@ -100,6 +100,16 @@ logs/
 .msg-*.txt
 
 # =====================================================
+# Per-developer Gradle overrides
+# Anything that should not be committed (local proxy, Panda4 path,
+# macports mirror, ...) goes in `~/.gradle/gradle.properties`,
+# not in this repo. Adding gradle.local.properties here as a
+# belt-and-braces in case someone tries to commit their local file
+# with a different name.
+# =====================================================
+gradle.local.properties
+
+# =====================================================
 # WSL DrvFS orphan files
 # When the IntelliJ :test task writes to user.home=%TEMP% under WSL,
 # files leak into the project root with absolute Windows paths
